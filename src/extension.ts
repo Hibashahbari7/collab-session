@@ -1,26 +1,29 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
+let sessionId: string | undefined = undefined;
+
 export function activate(context: vscode.ExtensionContext) {
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "collab-session" is now active!');
+  const openSession = vscode.commands.registerCommand('collab-session.openSession', async () => {
+    sessionId = Math.random().toString(36).substr(2, 6).toUpperCase(); // رمز عشوائي 6 أحرف
+    await vscode.env.clipboard.writeText(sessionId);
+    vscode.window.showInformationMessage(`🟢 Session "${sessionId}" created and copied to clipboard.`);
+  });
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('collab-session.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from collab-session!');
-	});
+  const joinSession = vscode.commands.registerCommand('collab-session.joinSession', async () => {
+    const input = await vscode.window.showInputBox({
+      prompt: 'Enter session ID to join',
+      placeHolder: 'ABC123'
+    });
+    if (!input) {
+      vscode.window.showWarningMessage('❗ No session ID entered.');
+      return;
+    }
+    sessionId = input.trim().toUpperCase();
+    vscode.window.showInformationMessage(`🔗 Joined session "${sessionId}"`);
+  });
 
-	context.subscriptions.push(disposable);
+  context.subscriptions.push(openSession, joinSession);
 }
 
-// This method is called when your extension is deactivated
 export function deactivate() {}
