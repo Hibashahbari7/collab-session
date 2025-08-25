@@ -11,7 +11,9 @@
   ],
   "activationEvents": [
     "onCommand:collab-session.openSession",
-    "onCommand:collab-session.joinSession"
+    "onCommand:collab-session.joinSession",
+    "onCommand:collab-session.sendCode",
+    "onCommand:collab-session.printUsers"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -27,6 +29,10 @@
       {
         "command": "collab-session.printUsers",
         "title": "Print Connected Users"
+      },
+      {
+        "command": "collab-session.sendCode",
+        "title": "Send Current File to Session"
       }
     ],
     "views": {
@@ -38,7 +44,6 @@
       ]
     }
   },
-  
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
@@ -59,6 +64,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "ws": "^8.18.3"
   }
 }
