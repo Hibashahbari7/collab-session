@@ -129,7 +129,7 @@ async function ensureSocket(): Promise<WebSocket> {
   if (ws && ws.readyState === WebSocket.OPEN) return ws;
 
   // read endpoint from env with safe defaults (client side)
-  const HOST = process.env.COLLAB_HOST || 'localhost';
+  const HOST = process.env.COLLAB_HOST || '192.168.1.187';
   const PORT = Number(process.env.COLLAB_PORT || 3000);
   const endpoint = `ws://${HOST}:${PORT}`;
 

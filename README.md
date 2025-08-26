@@ -25,7 +25,7 @@ Run the WebSocket server from the project root:
 **Linux / macOS**
 ```bash
 node server.js
-
+![StarttheServer screenshot](images\StarttheServer.png)
 Windows PowerShell
     node server.js
 The server starts on ws://localhost:3000.
@@ -72,3 +72,86 @@ Notes
     Default configuration uses localhost:3000.
     No code changes are required for standard usage.
     Multi-device use is possible by replacing localhost with the server’s IPv4.
+
+
+## Screenshots
+### 1. Start the Server
+![start the server](images/StarttheServer.png)  
+Start the WebSocket server using Node.js.
+
+### 2. Run the Extension
+![run extension](images/runF5.png)  
+Run the VS Code extension with **F5**.
+
+### 3. Home Panel
+![home panel](images/Home.png)  
+Main home panel of the extension (create or join session).
+
+### 4. Create Session (Host)
+![create session](images/createSession.png)  
+Host creating a new session.
+
+![create session detail](images/CreateSession1.png)  
+Session created successfully and session ID is displayed.
+
+![create session detail 2](images/createSession2.png)  
+Session ID is copied to clipboard automatically.
+
+![copy session id](images/copySessionId.png)  
+Copy the session ID manually to clipboard.
+
+### 5. Join Session (Students)
+![join session](images/JoinSession1.png)  
+Student joining a session by entering ID and name.
+
+![student joined](images/StudentJoine.png)  
+Confirmation when a student joins the session.
+
+![student joined 2](images/StudentJoin1.png)  
+Another example of a student joining the session.
+
+![student joined 3](images/StudentJoin2.png)  
+Multiple students joining the same session.
+
+### 6. Online Users
+![online users](images/OnlineUsers.png)  
+List of currently connected users.
+
+### 7. Student Answer Flow
+![send my answer](images/SendMyAnswer1.png)  
+Student sending their code answer to the host.
+
+![receive answer](images/ReceiveAnswer1.png)  
+Host receives an answer from a student.
+
+![receive answer 2](images/ReceiveAnswer2.png)  
+Host viewing another student’s answer.
+
+### 8. Feedback Flow
+![send feedback](images/SendFeedback1.png)  
+Host writing feedback for a student.
+
+![send feedback 2](images/SendFeedback2.png)  
+Feedback window for sending comments to students.
+
+![send feedback 3](images/SendFeedback3.png)  
+Example of multiple feedback interactions.
+
+![send feedback 4](images/SendFeedback4.png)  
+Feedback tab opened on the student’s side.
+
+### 9. Session Management
+![leave session](images/LeaveSession.png)  
+Student leaving the session.
+
+![user left](images/UserLeft.png)  
+Notification when a user leaves the session.
+
+![show home](images/ShowHome.png)  
+Command palette option: *Collab Session: Show Home*.
+
+![close session](images/CloseSession.png)  
+Host closing the session.
+
+![close session 2](images/CloseSession2.png)  
+Notification that the session has been closed.
