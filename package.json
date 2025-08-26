@@ -1,45 +1,124 @@
 {
   "name": "collab-session",
-  "displayName": "collab-session",
-  "description": "Collaborate session command for VS Code",
+  "displayName": "Collab Session",
+  "description": "A VS Code extension for collaborative sessions with per-student code isolation.",
   "version": "0.0.1",
+  "publisher": "your-name-or-org",
   "engines": {
-    "vscode": "^1.101.0"
+    "vscode": "^1.85.0"
   },
+  "icon": "resources/icon-64.png",
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onCommand:collab-session.openSession",
-    "onCommand:collab-session.joinSession",
-    "onCommand:collab-session.sendCode",
-    "onCommand:collab-session.printUsers"
-  ],
   "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:collab-session.showHome",
+    "onCommand:collab-session.createSession",
+    "onCommand:collab-session.joinSession",
+    "onCommand:collab-session.copySessionId",
+    "onCommand:collab-session.leaveSession",
+    "onCommand:collab-session.closeSession",
+    "onCommand:collab-session.sendAnswer",
+    "onCommand:collab-session.openStudentAnswer",
+    "onCommand:collab-session.sendFeedback",
+    "onView:collabSessionUsers",
+    "onView:collabSessionAnswers"
+  ],
   "contributes": {
     "commands": [
       {
-        "command": "collab-session.openSession",
-        "title": "Open Session"
+        "command": "collab-session.showHome",
+        "title": "Collab Session: Show Home"
+      },
+      {
+        "command": "collab-session.createSession",
+        "title": "Collab Session: Create Session"
       },
       {
         "command": "collab-session.joinSession",
-        "title": "Join Session"
+        "title": "Collab Session: Join Session"
       },
       {
-        "command": "collab-session.printUsers",
-        "title": "Print Connected Users"
+        "command": "collab-session.copySessionId",
+        "title": "Collab Session: Copy Session ID"
       },
       {
-        "command": "collab-session.sendCode",
-        "title": "Send Current File to Session"
+        "command": "collab-session.leaveSession",
+        "title": "Collab Session: Leave Session"
+      },
+      {
+        "command": "collab-session.closeSession",
+        "title": "Collab Session: Close Session (host)"
+      },
+      {
+        "command": "collab-session.sendAnswer",
+        "title": "Collab Session: Send My Answer"
+      },
+      {
+        "command": "collab-session.openStudentAnswer",
+        "title": "Collab Session: Open Student Answer"
+      },
+      {
+        "command": "collab-session.sendFeedback",
+        "title": "Collab Session: Send Feedback (host → student)"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "collabSession",
+          "title": "Collab",
+          "icon": "resources/icon-32.png"
+        }
+      ]
+    },
     "views": {
+      "collabSession": [
+        {
+          "id": "collabSessionHome",
+          "name": "Home"
+        },
+        {
+          "id": "collabSessionAnswers",
+          "name": "Answers"
+        }
+      ],
       "explorer": [
         {
           "id": "collabSessionUsers",
           "name": "Connected Users"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "collab-session.copySessionId",
+          "when": "view == collabSessionUsers",
+          "group": "navigation@1"
+        },
+        {
+          "command": "collab-session.leaveSession",
+          "when": "view == collabSessionUsers",
+          "group": "navigation@2"
+        },
+        {
+          "command": "collab-session.closeSession",
+          "when": "view == collabSessionUsers",
+          "group": "navigation@3"
+        },
+        {
+          "command": "collab-session.sendFeedback",
+          "when": "view == collabSessionAnswers",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "collab-session.sendAnswer",
+          "when": "resourceExtname =~ /\\.(txt|md|py|js|ts|cpp|c|java|cs|rs|go|kt|swift)$/ && editorLangId",
+          "group": "navigation@9"
         }
       ]
     }
@@ -49,22 +128,23 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test"
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.10",
+    "@types/glob": "^8.1.0",
+    "@types/minimatch": "^5.1.2",
+    "@types/mocha": "^10.0.1",
     "@types/node": "20.x",
-    "@types/vscode": "^1.101.0",
-    "@typescript-eslint/eslint-plugin": "^8.31.1",
-    "@typescript-eslint/parser": "^8.31.1",
-    "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.25.1",
-    "typescript": "^5.8.3"
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
+    "@vscode/test-electron": "^2.3.10",
+    "eslint": "^8.56.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.3"
   },
   "dependencies": {
-    "@types/ws": "^8.18.1",
     "ws": "^8.18.3"
   }
 }
