@@ -132,15 +132,13 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@types/glob": "^8.1.0",
-    "@types/minimatch": "^5.1.2",
     "@types/mocha": "^10.0.1",
     "@types/node": "20.x",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^2.3.10",
     "eslint": "^8.56.0",
-    "glob": "^10.3.10",
+    "glob": "^10.4.5",
     "mocha": "^10.2.0",
     "typescript": "^5.3.3"
   },

@@ -21,6 +21,7 @@ type MsgQuestion       = { type: 'question'; text: string };
 type MsgAnswerReceived = { type: 'answerReceived'; name: string; code: string };
 type MsgSessionClosed  = { type: 'sessionClosed' };
 type MsgError          = { type: 'error'; message?: string };
+type MsgFeedback = { type: 'feedback'; from?: string; text?: string };
 
 type ServerMessage =
   | MsgCreated
@@ -32,6 +33,7 @@ type ServerMessage =
   | MsgAnswerReceived
   | MsgSessionClosed
   | MsgError
+  | MsgFeedback
   | Record<string, unknown>; // forward compatible
 
 // ---------- globals -----------------------------------------------------------
@@ -123,9 +125,20 @@ function goHome() {
 
 // ---------- socket lifecycle --------------------------------------------------
 async function ensureSocket(): Promise<WebSocket> {
+  // if there's an open socket, reuse it
   if (ws && ws.readyState === WebSocket.OPEN) return ws;
 
-  ws = new WebSocket('ws://192.168.1.187:3000');
+  // read endpoint from env with safe defaults (client side)
+  const HOST = process.env.COLLAB_HOST || 'localhost';
+  const PORT = Number(process.env.COLLAB_PORT || 3000);
+  const endpoint = `ws://${HOST}:${PORT}`;
+
+  // create the websocket using the string endpoint
+  ws = new WebSocket(endpoint);
+
+  // tiny log helps debugging which endpoint is used
+  ws.once('open', () => console.log(`connected to ${endpoint}`));
+
 
   ws.on('message', async (raw: WebSocket.RawData) => {
     let msg: ServerMessage;
@@ -325,9 +338,6 @@ const cmdOpenStudentAnswer = vscode.commands.registerCommand(
     } catch { /* ignore */ }
   }
 );
-
-
-
 
 // Collab Session: Show Home (webview UI)
 const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', async () => {

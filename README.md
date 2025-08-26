@@ -1,71 +1,74 @@
-# collab-session README
+# Collab Session – Real-time Code Sharing in Class
 
-This is the README for your extension "collab-session". After writing up a brief description, we recommend including the following sections.
+## Overview
+**Collab Session** is a Visual Studio Code extension with a Node.js WebSocket backend.  
+It enables **lecturers** to create live coding sessions and **students** to participate in real time.  
 
-## Features
-
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
-
-For example if there is an image subfolder under your extension project workspace:
-
-\!\[feature X\]\(images/feature-x.png\)
-
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
-
-## Requirements
-
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+Key capabilities:
+- Host can create sessions and set coding questions.  
+- Students can join sessions, submit answers, and receive feedback.  
+- Host can review answers, track connected users, and close sessions.  
 
 ---
 
-## Following extension guidelines
+## Requirements
+- [Node.js](https://nodejs.org/) (version 18 or later)  
+- [Visual Studio Code](https://code.visualstudio.com/)  
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+---
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+## Setup & Execution
 
-## Working with Markdown
+### 1. Start the Server
+Run the WebSocket server from the project root:
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+**Linux / macOS**
+```bash
+node server.js
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+Windows PowerShell
+    node server.js
+The server starts on ws://localhost:3000.
 
-## For more information
+2. Launch the Extension
+    1.Open the project in Visual Studio Code.
+    2.Press F5 (Run Extension).
+    3.A new VS Code window opens with the extension activated.
+    4.The extension automatically connects to ws://localhost:3000.
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+Usage
+Typical Workflow
 
-**Enjoy!**
+1.Host (Lecturer)
+    1.Create a session (session ID is auto-copied).
+    2.Share the session ID with students.
+    3.Set a coding question.
+
+2.Students
+    1.Join the session with ID and name.
+    2.Open a file, edit their solution, and send their answer.
+
+3.Host
+    1.View student submissions in real time.
+    2.Provide individual feedback.
+    3.Close the session once complete.
+
+Extension Commands
+All commands are accessible from the Command Palette (Ctrl+Shift+P / Cmd+Shift+P):
+| Command                                 | Role           | Description                                        |
+| --------------------------------------- | -------------- | -------------------------------------------------- |
+| **Collab Session: Show Home**           | Host & Student | Opens the main panel (create/join session).        |
+| **Collab Session: Create Session**      | Host           | Creates a new session and copies the ID.           |
+| **Collab Session: Join Session**        | Student        | Joins a session by ID and name.                    |
+| **Collab Session: Set Question**        | Host           | Shares a coding question with students.            |
+| **Collab Session: Send My Answer**      | Student        | Sends the content of the current file to the host. |
+| **Collab Session: Open Student Answer** | Host           | Opens a student’s submitted code.                  |
+| **Collab Session: Send Feedback**       | Host           | Sends text feedback to a student.                  |
+| **Collab Session: Copy Session ID**     | Host           | Copies the current session ID to clipboard.        |
+| **Collab Session: Leave Session**       | Student        | Disconnects from the current session.              |
+| **Collab Session: Close Session**       | Host           | Ends the session and disconnects all users.        |
+
+Notes
+    Default configuration uses localhost:3000.
+    No code changes are required for standard usage.
+    Multi-device use is possible by replacing localhost with the server’s IPv4.

@@ -8,6 +8,8 @@
 const { WebSocketServer } = require('ws');
 
 // --- Config ---
+// host and port are taken from environment variables if available
+// default host=0.0.0.0 (listen on all interfaces), default port=3000
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 3000);
 
@@ -57,6 +59,12 @@ function safeSend(sock, payload) {
 // --- Server ---
 const wss = new WebSocketServer({ host: HOST, port: PORT }, () => {
   console.log(`Server running at ws://${HOST}:${PORT}`);
+});
+
+// log when the server is ready
+wss.on('listening', () => {
+  // note: host shown here is just for info; to connect from another machine use the actual ipv4 of the server
+  console.log(`websocket server listening on ws://${HOST}:${PORT}`);
 });
 
 // --- Connection ---
