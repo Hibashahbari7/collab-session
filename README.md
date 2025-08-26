@@ -23,9 +23,9 @@ Key capabilities:
 Run the WebSocket server from the project root:
 
 **Linux / macOS**
-```bash
+<!-- ```bash -->
 node server.js
-![StarttheServer screenshot](images\StarttheServer.png)
+![StarttheServer screenshot](images/StarttheServer.png)
 Windows PowerShell
     node server.js
 The server starts on ws://localhost:3000.
@@ -73,7 +73,7 @@ Notes
     No code changes are required for standard usage.
     Multi-device use is possible by replacing localhost with the server’s IPv4.
 
-
+<!-- ```markdown -->
 ## Screenshots
 ### 1. Start the Server
 ![start the server](images/StarttheServer.png)  
