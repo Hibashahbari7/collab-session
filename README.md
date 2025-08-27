@@ -84,18 +84,18 @@ Start the WebSocket server using Node.js.
 Run the VS Code extension with **F5**.
 
 ### 3. Home Panel
+![show home](images/ShowHome.png)  
+Command palette option: *Collab Session: Show Home*.
+
 ![home panel](images/Home.png)  
 Main home panel of the extension (create or join session).
 
 ### 4. Create Session (Host)
-![create session](images/createSession.png)  
+![create session](images/createSession1.png)  
 Host creating a new session.
 
-![create session detail](images/CreateSession1.png)  
-Session created successfully and session ID is displayed.
-
-![create session detail 2](images/createSession2.png)  
-Session ID is copied to clipboard automatically.
+![create session detail](images/CreateSession.png)  
+Session created successfully and session ID is displayed and copied to clipboard automatically..
 
 ![copy session id](images/copySessionId.png)  
 Copy the session ID manually to clipboard.
@@ -107,17 +107,7 @@ Student joining a session by entering ID and name.
 ![student joined](images/StudentJoine.png)  
 Confirmation when a student joins the session.
 
-![student joined 2](images/StudentJoin1.png)  
-Another example of a student joining the session.
-
-![student joined 3](images/StudentJoin2.png)  
-Multiple students joining the same session.
-
-### 6. Online Users
-![online users](images/OnlineUsers.png)  
-List of currently connected users.
-
-### 7. Student Answer Flow
+### 6. Student Answer Flow
 ![send my answer](images/SendMyAnswer1.png)  
 Student sending their code answer to the host.
 
@@ -127,18 +117,22 @@ Host receives an answer from a student.
 ![receive answer 2](images/ReceiveAnswer2.png)  
 Host viewing another student’s answer.
 
-### 8. Feedback Flow
+### 7. Feedback Flow
 ![send feedback](images/SendFeedback1.png)  
 Host writing feedback for a student.
 
 ![send feedback 2](images/SendFeedback2.png)  
 Feedback window for sending comments to students.
 
-![send feedback 3](images/SendFeedback3.png)  
-Example of multiple feedback interactions.
+![send feedback 3](images/SendFeedback3.png)
+Feedback sent to the student.
 
-![send feedback 4](images/SendFeedback4.png)  
+![send feedback 4](images/SendFeedback4.png)
 Feedback tab opened on the student’s side.
+
+### 8. Online Users
+![online users](images/OnlineUsers.png)  
+List of currently connected users.
 
 ### 9. Session Management
 ![leave session](images/LeaveSession.png)  
@@ -146,9 +140,6 @@ Student leaving the session.
 
 ![user left](images/UserLeft.png)  
 Notification when a user leaves the session.
-
-![show home](images/ShowHome.png)  
-Command palette option: *Collab Session: Show Home*.
 
 ![close session](images/CloseSession.png)  
 Host closing the session.
