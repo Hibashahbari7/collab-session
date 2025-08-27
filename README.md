@@ -91,10 +91,10 @@ Command palette option: *Collab Session: Show Home*.
 Main home panel of the extension (create or join session).
 
 ### 4. Create Session (Host)
-![create session](images/createSession1.png)  
+![create session](images/CreateSession1.png)  
 Host creating a new session.
 
-![create session detail](images/CreateSession.png)  
+![create session detail](images/csreateSession.png)  
 Session created successfully and session ID is displayed and copied to clipboard automatically..
 
 ![copy session id](images/copySessionId.png)  
@@ -140,9 +140,6 @@ Student leaving the session.
 
 ![user left](images/UserLeft.png)  
 Notification when a user leaves the session.
-
-![close session](images/CloseSession.png)  
-Host closing the session.
 
 ![close session 2](images/CloseSession2.png)  
 Notification that the session has been closed.
