@@ -94,7 +94,7 @@ Main home panel of the extension (create or join session).
 ![create session](images/CreateSession1.png)  
 Host creating a new session.
 
-![create session detail](images/csreateSession.png)  
+![create session detail](images/createSession.png)  
 Session created successfully and session ID is displayed and copied to clipboard automatically..
 
 ![copy session id](images/copySessionId.png)  
