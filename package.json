@@ -23,7 +23,8 @@
     "onCommand:collab-session.openStudentAnswer",
     "onCommand:collab-session.sendFeedback",
     "onView:collabSessionUsers",
-    "onView:collabSessionAnswers"
+    "onView:collabSessionAnswers",
+    "onCommand:collab-session.showQuestion"
   ],
   "contributes": {
     "commands": [
@@ -62,7 +63,12 @@
       {
         "command": "collab-session.sendFeedback",
         "title": "Collab Session: Send Feedback (host → student)"
+      },
+      {
+        "command": "collab-session.showQuestion",
+        "title": "Collab Session: Show Question"
       }
+
     ],
     "viewsContainers": {
       "activitybar": [
@@ -112,6 +118,11 @@
           "command": "collab-session.sendFeedback",
           "when": "view == collabSessionAnswers",
           "group": "navigation@1"
+        },
+        {
+          "command": "collab-session.showQuestion",
+          "when": "view == collabSessionUsers",
+          "group": "navigation@0"
         }
       ],
       "editor/title": [

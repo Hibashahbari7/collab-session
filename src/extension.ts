@@ -56,70 +56,70 @@ let answersProvider: AnswersTreeProvider | undefined; // tree view for answers
 const MACHINE_ID = vscode.env.machineId;
 
 
-// ---------- tiny helpers ------------------------------------------------------
-const asString = (x: unknown) => (typeof x === 'string' ? x : undefined);
-const asUserList = (x: unknown) =>
-  Array.isArray(x) && x.every(o => typeof o?.name === 'string')
-    ? (x as Array<{ name: string }>)
-    : undefined;
+  // ---------- tiny helpers ------------------------------------------------------
+  const asString = (x: unknown) => (typeof x === 'string' ? x : undefined);
+  const asUserList = (x: unknown) =>
+    Array.isArray(x) && x.every(o => typeof o?.name === 'string')
+      ? (x as Array<{ name: string }>)
+      : undefined;
 
-function send(payload: unknown) {
-  // JSON send with guard
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(JSON.stringify(payload)); } catch {}
-}
-
-function randomId() {
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
-
-function guessLanguage(code: string): string | undefined {
-  // tiny heuristic only
-  if (/^\s*#include\s+<.+?>/m.test(code)) return 'cpp';
-  if (/^\s*def\s+\w+\(/m.test(code)) return 'python';
-  if (/^\s*(import|export)\s+/m.test(code)) return 'typescript';
-  return undefined;
-}
-
-// keep one tab per student answer
-const answerUris = new Map<string, vscode.Uri>();
-
-function answerUriFor(student: string) {
-  let uri = answerUris.get(student);
-  if (!uri) {
-    // untitled uri with a nice name -> tab caption looks like "answer: hiba.txt"
-    uri = vscode.Uri.parse(`untitled:answer-${student}.txt`);
-    answerUris.set(student, uri);
+  function send(payload: unknown) {
+    // JSON send with guard
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try { ws.send(JSON.stringify(payload)); } catch {}
   }
-  return uri;
-}
 
-async function openOrUpdateAnswerTab(student: string, code: string) {
-  const uri = answerUriFor(student);
-  let doc: vscode.TextDocument | undefined;
+  function randomId() {
+    return Math.random().toString(36).slice(2, 8).toUpperCase();
+  }
 
-  // try find already-open doc by URI
-  doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
-  if (!doc) {
-    // open new untitled doc with initial content
-    doc = await vscode.workspace.openTextDocument({ language: guessLanguage(code) ?? 'plaintext', content: code });
-  } else {
-    // update existing
-    const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
-    if (editor) {
-      const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-      await editor.edit(ed => ed.replace(full, code));
+  function guessLanguage(code: string): string | undefined {
+    // tiny heuristic only
+    if (/^\s*#include\s+<.+?>/m.test(code)) return 'cpp';
+    if (/^\s*def\s+\w+\(/m.test(code)) return 'python';
+    if (/^\s*(import|export)\s+/m.test(code)) return 'typescript';
+    return undefined;
+  }
+
+  // keep one tab per student answer
+  const answerUris = new Map<string, vscode.Uri>();
+
+  function answerUriFor(student: string) {
+    let uri = answerUris.get(student);
+    if (!uri) {
+      // untitled uri with a nice name -> tab caption looks like "answer: hiba.txt"
+      uri = vscode.Uri.parse(`untitled:answer-${student}.txt`);
+      answerUris.set(student, uri);
     }
+    return uri;
   }
 
-  // show beside the question, not preview
-  await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
-}
+  async function openOrUpdateAnswerTab(student: string, code: string) {
+    const uri = answerUriFor(student);
+    let doc: vscode.TextDocument | undefined;
 
-function goHome() {
-  void vscode.commands.executeCommand('collab-session.showHome')
-    .then(undefined, () => { /* ignore */ });
-}
+    // try find already-open doc by URI
+    doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+    if (!doc) {
+      // open new untitled doc with initial content
+      doc = await vscode.workspace.openTextDocument({ language: guessLanguage(code) ?? 'plaintext', content: code });
+    } else {
+      // update existing
+      const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
+      if (editor) {
+        const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        await editor.edit(ed => ed.replace(full, code));
+      }
+    }
+
+    // show beside the question, not preview
+    await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+  }
+
+  function goHome() {
+    void vscode.commands.executeCommand('collab-session.showHome')
+      .then(undefined, () => { /* ignore */ });
+  }
 
 
 
@@ -525,7 +525,16 @@ async function showOrUpdateQuestionEditor(text: string) {
   }
 }
 
-// ---------- optional: Connected Users tree -----------------------------------
+// Collab Session: Show Question (host or student)
+const cmdShowQuestion = vscode.commands.registerCommand('collab-session.showQuestion', async () => {
+  if (!sessionId) {
+    void vscode.window.showWarningMessage('No active session. Create or join a session first.');
+    return;
+  }
+  await showOrUpdateQuestionEditor(latestQuestionText ?? '');
+});
+
+// ---------- Connected Users tree -----------------------------------
 class SessionTreeProvider implements vscode.TreeDataProvider<UserItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<UserItem | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -563,8 +572,6 @@ class UserItem extends vscode.TreeItem {
     }
   }
 }
-
-
 
 
 class AnswerItem extends vscode.TreeItem {
@@ -675,7 +682,8 @@ export function activate(context: vscode.ExtensionContext) {
     cmdCloseSession,
     cmdSendAnswer,
     cmdOpenStudentAnswer,
-    cmdSendFeedback
+    cmdSendFeedback,
+    cmdShowQuestion
   );
 }
 

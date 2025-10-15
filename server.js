@@ -123,6 +123,7 @@ wss.on('connection', (socket) => {
         return safeSend(socket, { type: 'error', message: 'This machine already participates in this session' });
       }
 
+
       s.users.set(name, { socket, machineId });
       socketMeta.set(socket, { sid, name, role: 'student', isAlive: true, machineId });
 
