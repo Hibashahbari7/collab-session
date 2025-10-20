@@ -64,10 +64,11 @@ const wss = new WebSocketServer({ host: HOST, port: PORT }, () => {
   console.log(`Server bound at ws://${HOST}:${PORT}`);
 });
 
-// Nice “listening” log that shows your real IPv4
+// Print the *actual* bound address (no confusion if HOST was 0.0.0.0)
 wss.on('listening', () => {
-  const ip = getLocalIPv4();
-  console.log(`websocket server listening on ws://${ip}:${PORT}`);
+  // ws exposes the underlying net.Server .address()
+  const addr = wss.address(); // { address: '192.168.1.187', port: 3000, family: 'IPv4' }
+  console.log(`websocket server listening on ws://${addr.address}:${addr.port}`);
 });
 
 // Connection handler
