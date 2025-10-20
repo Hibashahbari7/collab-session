@@ -5,69 +5,72 @@
 // answers, notifications for join/leave/close.
 // -----------------------------------------------------------------------------
 
+// ✅ Import ws ONCE
 const { WebSocketServer } = require('ws');
 
-// --- Config ---
-// host and port are taken from environment variables if available
-// default host=0.0.0.0 (listen on all interfaces), default port=3000
-const HOST = process.env.HOST || '0.0.0.0';
-const PORT = Number(process.env.PORT || 3000);
+// ✅ Dynamic IPv4 detection (just for pretty logging + info)
+const os = require('os');
+function getLocalIPv4() {
+  const interfaces = os.networkInterfaces();
+  for (const name in interfaces) {
+    for (const net of interfaces[name]) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+  }
+  return 'localhost';
+}
 
-// --- State ---
-// sessions: sid -> {
-//   sid,
-//   owner,               // host socket
-//   ownerMachineId,      // host machineId
-//   users: Map<name, { socket, machineId }>, // students
-//   question
-// }
-const sessions = new Map();
+// ✅ Host/Port config
+// - HOST: 0.0.0.0 to listen on all interfaces (LAN)
+// - PORT: prefer COLLAB_PORT, then PORT, else default 3000
+const HOST = process.env.HOST || '0.0.0.0';
+const PORT = Number(process.env.COLLAB_PORT || process.env.PORT || 3000);
+
+// ✅ SQLite setup (persist answers)
+const Database = require('better-sqlite3');
+const db = new Database('collab.db');
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sessionId TEXT,
+    studentName TEXT,
+    code TEXT,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`).run();
+console.log('📁 Database ready: collab.db');
+
+// In-memory state
+const sessions = new Map();      // sid -> { sid, owner, ownerMachineId, users: Map<name,{socket,machineId}>, question }
 const socketMeta = new WeakMap();
 
-
-// --- Helpers ---
+// Helpers
 function broadcast(session, payload) {
-  // send JSON to all users + host
   const json = JSON.stringify(payload);
   session.users.forEach(({ socket }) => { try { socket.send(json); } catch {} });
   try { session.owner?.send(json); } catch {}
 }
-
 function getOrCreateSession(sid, ownerSocket, ownerMachineId) {
   if (!sessions.has(sid)) {
-    sessions.set(sid, {
-      sid,
-      owner: ownerSocket,
-      ownerMachineId,
-      users: new Map(),
-      question: ''
-    });
+    sessions.set(sid, { sid, owner: ownerSocket, ownerMachineId, users: new Map(), question: '' });
   }
   return sessions.get(sid);
 }
+function usersPayload(session) { return [...session.users.keys()].map(n => ({ name: n })); }
+function safeSend(sock, payload) { try { sock.send(JSON.stringify(payload)); } catch {} }
 
-
-function usersPayload(session) {
-  // return list of {name}
-  return [...session.users.keys()].map(n => ({ name: n }));
-}
-
-function safeSend(sock, payload) {
-  try { sock.send(JSON.stringify(payload)); } catch {}
-}
-
-// --- Server ---
+// ✅ Create ONE WebSocketServer instance (لا تكرّريه)
 const wss = new WebSocketServer({ host: HOST, port: PORT }, () => {
-  console.log(`Server running at ws://${HOST}:${PORT}`);
+  console.log(`Server bound at ws://${HOST}:${PORT}`);
 });
 
-// log when the server is ready
+// Nice “listening” log that shows your real IPv4
 wss.on('listening', () => {
-  // note: host shown here is just for info; to connect from another machine use the actual ipv4 of the server
-  console.log(`websocket server listening on ws://${HOST}:${PORT}`);
+  const ip = getLocalIPv4();
+  console.log(`websocket server listening on ws://${ip}:${PORT}`);
 });
 
-// --- Connection ---
+// Connection handler
 wss.on('connection', (socket) => {
   socketMeta.set(socket, { isAlive: true });
 
@@ -86,8 +89,7 @@ wss.on('connection', (socket) => {
       const machineId = String(msg.machineId || '').trim();
       if (!sid) return safeSend(socket, { type: 'error', message: 'Bad session id' });
 
-      // host can own only one active session (per MACHINE too)
-      const alreadyOwnerBySocket = [...sessions.values()].some(s => s.owner === socket);
+      const alreadyOwnerBySocket  = [...sessions.values()].some(s => s.owner === socket);
       const alreadyOwnerByMachine = [...sessions.values()].some(s => s.ownerMachineId === machineId);
       if (alreadyOwnerBySocket || alreadyOwnerByMachine) {
         return safeSend(socket, { type: 'error', message: 'You already own a session on this machine' });
@@ -102,7 +104,6 @@ wss.on('connection', (socket) => {
       return;
     }
 
-
     // --- JOIN (student) ---
     if (msg.type === 'join') {
       const sid = String(msg.sessionId || '').toUpperCase();
@@ -112,17 +113,15 @@ wss.on('connection', (socket) => {
       if (!s) return safeSend(socket, { type: 'error', message: 'Invalid session' });
       if (!name) return safeSend(socket, { type: 'error', message: 'Name required' });
 
-      // unique name (as before)
       if (s.users.has(name)) {
         return safeSend(socket, { type: 'error', message: 'Name already used' });
       }
 
-      // NEW: block same machine from joining the same session twice
-      const sameMachineAlreadyIn = [...s.users.values()].some(u => u.machineId === machineId) || s.ownerMachineId === machineId;
+      const sameMachineAlreadyIn =
+        [...s.users.values()].some(u => u.machineId === machineId) || s.ownerMachineId === machineId;
       if (sameMachineAlreadyIn) {
         return safeSend(socket, { type: 'error', message: 'This machine already participates in this session' });
       }
-
 
       s.users.set(name, { socket, machineId });
       socketMeta.set(socket, { sid, name, role: 'student', isAlive: true, machineId });
@@ -133,8 +132,6 @@ wss.on('connection', (socket) => {
       return;
     }
 
-
-
     // --- SET QUESTION (host) ---
     if (msg.type === 'setQuestion') {
       const s = [...sessions.values()].find(x => x.owner === socket);
@@ -144,32 +141,36 @@ wss.on('connection', (socket) => {
       return;
     }
 
-    // --- ANSWER (student manual) ---
+    // --- ANSWER (student -> host) ---
     if (msg.type === 'answer') {
-      const sid = String(msg.sessionId || '').toUpperCase();
+      const sid  = String(msg.sessionId || '').toUpperCase();
       const name = String(msg.name || '').trim();
       const code = String(msg.code || '');
       const s = sessions.get(sid);
       if (!s) return;
-      // send only to host
+
+      // 💾 Save answer to DB
+      db.prepare('INSERT INTO answers (sessionId, studentName, code) VALUES (?, ?, ?)')
+        .run(sid, name, code);
+      console.log(`Saved answer from ${name} (session ${sid})`);
+
       safeSend(s.owner, { type: 'answerReceived', name, code });
       return;
     }
 
     // --- LEAVE (student) ---
     if (msg.type === 'leave') {
-      const m = socketMeta.get(socket) || {};
+      const m   = socketMeta.get(socket) || {};
       const sid = String(msg.sessionId || m.sid || '').toUpperCase();
       const name = String(msg.name || m.name || '').trim();
       const s = sessions.get(sid);
       if (s && name && s.users.delete(name)) {
         broadcast(s, { type: 'userLeft', sessionId: sid, name });
-        broadcast(s, { type: 'users', sessionId: sid, users: usersPayload(s) });
+        broadcast(s, { type: 'users',   sessionId: sid, users: usersPayload(s) });
       }
       socketMeta.set(socket, { isAlive: true });
       return;
     }
-
 
     // --- CLOSE (host) ---
     if (msg.type === 'close') {
@@ -187,9 +188,8 @@ wss.on('connection', (socket) => {
 
     // --- FEEDBACK (host -> one student) ---
     if (msg.type === 'feedback') {
-      // host sends feedback to a single student by name
-      const sid = String(msg.sessionId || '').toUpperCase();
-      const to  = String(msg.to || '').trim();
+      const sid  = String(msg.sessionId || '').toUpperCase();
+      const to   = String(msg.to || '').trim();
       const text = String(msg.text || '');
       const s = sessions.get(sid);
       if (!s || !to || !text) return;
@@ -197,13 +197,12 @@ wss.on('connection', (socket) => {
       if (target?.socket) safeSend(target.socket, { type: 'feedback', from: 'host', text });
       return;
     }
-
   });
 
-  // --- Disconnect cleanup ---
+  // Disconnect cleanup
   socket.on('close', () => {
     const meta = socketMeta.get(socket) || {};
-    const sid = meta.sid;
+    const sid  = meta.sid;
     const role = meta.role;
     const name = meta.name;
     if (!sid) return;
@@ -217,13 +216,13 @@ wss.on('connection', (socket) => {
     } else if (role === 'student' && name) {
       if (s.users.delete(name)) {
         broadcast(s, { type: 'userLeft', sessionId: sid, name });
-        broadcast(s, { type: 'users', sessionId: sid, users: usersPayload(s) });
+        broadcast(s, { type: 'users',   sessionId: sid, users: usersPayload(s) });
       }
     }
   });
 });
 
-// --- Heartbeat (ping/pong) ---
+// Heartbeat (ping/pong)
 const interval = setInterval(() => {
   wss.clients.forEach(ws => {
     const meta = socketMeta.get(ws);

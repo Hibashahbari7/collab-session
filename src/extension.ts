@@ -121,169 +121,234 @@ const MACHINE_ID = vscode.env.machineId;
       .then(undefined, () => { /* ignore */ });
   }
 
+// -----------------------------------------------------------------------------
+// 🧠 Dynamic Host Input
+// Ask once for the host IPv4 and save it in settings.
+// -----------------------------------------------------------------------------
+let HOST: string | undefined;
 
+// -----------------------------------------------------------------------------
+// 🧠 Dynamic Host Input
+// This function gets the Host IPv4 (server address) from VS Code settings.
+// If it's not saved yet, it asks the user once and saves it globally.
+// -----------------------------------------------------------------------------
+async function getHostIP(): Promise<string> {
+  // ✅ Try to read the saved host IP from settings (e.g. collab.hostIP)
+  const saved = vscode.workspace.getConfiguration().get<string>('collab.hostIP');
+  if (saved) return saved; // If exists → use it
+
+  // 🧾 Ask the user to input the host IP the first time
+  const input = await vscode.window.showInputBox({
+    prompt: 'Enter host IPv4 (e.g. 192.168.1.187)',
+    placeHolder: '192.168.x.x',
+    value: 'localhost'
+  });
+
+  // 🚫 Stop if no input was provided
+  if (!input) throw new Error('Host IP not provided');
+
+  // 💾 Save the IP to VS Code settings (so next time it will be remembered)
+  await vscode.workspace.getConfiguration()
+    .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
+
+  return input;
+}
+
+
+
+// -----------------------------------------------------------------------------
+// 🌐 Build a proper WebSocket endpoint from user-provided "host".
+// - If the user enters a full URL that starts with ws:// or wss:// → use it as-is
+// - If the user enters a domain name (e.g. ngrok host) → use secure WSS without port
+// - If the user enters a local IPv4 (e.g. 192.168.x.x) → use WS with :port
+// Why? ngrok/public internet requires TLS (wss) and no :3000 on the public URL,
+// while LAN connections typically use ws://<ip>:<port>.
+// -----------------------------------------------------------------------------
+function buildWsEndpoint(host: string, port: number): string {
+  // 1) Full URL already provided by the user? (e.g. "wss://xyz.ngrok.app")
+  if (/^wss?:\/\//i.test(host)) {
+    return host; // Use exactly what the user typed
+  }
+
+  // 2) Looks like a domain (has letters). Treat as public internet host → WSS (TLS) and no explicit port.
+  //    Examples: "abcd1234.ngrok-free.app", "my-school.example.com"
+  if (/[a-zA-Z]/.test(host)) {
+    return `wss://${host}`; // Secure WebSocket for internet
+  }
+
+  // 3) Otherwise assume it's a local IPv4 → plain WS with explicit port.
+  //    Example: "192.168.1.50" → "ws://192.168.1.50:3000"
+  return `ws://${host}:${port}`;
+}
 
 // ---------- socket lifecycle --------------------------------------------------
 async function ensureSocket(): Promise<WebSocket> {
-  // if there's an open socket, reuse it
+  // Reuse the existing socket if it's already open
   if (ws && ws.readyState === WebSocket.OPEN) return ws;
 
-  // read endpoint from env with safe defaults (client side)
-  const HOST = process.env.COLLAB_HOST || '192.168.1.187';
+  // The default port for our local WS server (when using LAN)
   const PORT = Number(process.env.COLLAB_PORT || 3000);
-  const endpoint = `ws://${HOST}:${PORT}`;
 
-  // create the websocket using the string endpoint
+  // Ask/read the host the user configured via "Collab Session: Set Host IP"
+  // This may be:
+  //   - local IPv4 like "192.168.1.187"
+  //   - an ngrok domain like "e07913d4ffbf.ngrok-free.app"
+  //   - or even a full URL like "wss://e07913d4ffbf.ngrok-free.app"
+  const host = await getHostIP();
+
+  // Build the final endpoint correctly based on the input above
+  const endpoint = buildWsEndpoint(host, PORT);
+
+  // Create the WebSocket to the resolved endpoint
   ws = new WebSocket(endpoint);
 
-  // tiny log helps debugging which endpoint is used
+  // Helpful log for debugging which endpoint was actually used
   ws.once('open', () => console.log(`connected to ${endpoint}`));
 
+// --- handle all server messages (host & student) -----------------------------
+ws.on('message', async (raw: WebSocket.RawData) => {
+  let msg: ServerMessage;
+  try { msg = JSON.parse(raw.toString()); } catch { return; }
 
-  ws.on('message', async (raw: WebSocket.RawData) => {
-    let msg: ServerMessage;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
+  const s = (x: unknown) => (typeof x === 'string' ? x : undefined);
+  const asUsers = (x: unknown) =>
+    Array.isArray(x) && x.every(o => typeof (o as any)?.name === 'string')
+      ? (x as Array<{ name: string }>) : undefined;
 
-    switch (msg.type) {
-      case 'created': {
-        const sid = asString((msg as MsgCreated).sessionId);
-        if (!sid) return;
-        sessionId = sid;
-        void vscode.env.clipboard.writeText(sid);
-        void vscode.window.showInformationMessage(`🟢 Session "${sid}" created & copied to clipboard.`);
-        if (!usersBySession.has(sid)) usersBySession.set(sid, new Set());
-        treeDataProvider?.refresh();
-        break;
-      }
-
-      case 'joined': {
-        const m = msg as MsgJoined;
-        const sid = asString(m.sessionId);
-        const name = asString(m.name);
-        if (!sid || !name) return;
-        sessionId = sid;
-        nickname = name;
-
-        // update users map (will also come via 'users', but this is immediate)
-        const set = usersBySession.get(sid) ?? new Set<string>();
-        set.add(name);
-        usersBySession.set(sid, set);
-        treeDataProvider?.refresh();
-
-        void vscode.window.showInformationMessage(`✅ Joined ${sid} as ${name}`);
-
-        // show question if provided
-        if (typeof m.question === 'string') {
-          latestQuestionText = m.question;
-          void showOrUpdateQuestionEditor(latestQuestionText);
-        }
-        break;
-      }
-
-      case 'users': {
-        const sid  = asString((msg as any).sessionId);
-        const list = asUserList((msg as any).users);
-        if (!sid || !list) return;
-        const names = list.map(u => u.name);
-        usersBySession.set(sid, new Set(names));
-        treeDataProvider?.refresh();
-        break;
-      }
-
-      case 'userJoined': {
-        const m = msg as MsgUserJoined;
-        if (m.sessionId === sessionId && m.name !== nickname) {
-          void vscode.window.showInformationMessage(`👋 ${m.name} joined`);
-        }
-        break;
-      }
-
-      case 'userLeft': {
-        const m = msg as MsgUserLeft;
-        if (m.sessionId === sessionId) {
-          const set = usersBySession.get(m.sessionId) ?? new Set<string>();
-          set.delete(m.name);
-          usersBySession.set(m.sessionId, set);
-
-          latestAnswers.delete(m.name);
-          answersProvider?.refresh();
-          treeDataProvider?.refresh();
-
-          void vscode.window.showInformationMessage(`👋 ${m.name} left`);
-        }
-        break;
-      }
-
-
-      case 'question': {
-        const m = msg as MsgQuestion;
-        latestQuestionText = asString(m.text) ?? '';
-        void showOrUpdateQuestionEditor(latestQuestionText);
-        break;
-      }
-
-      case 'sessionClosed': {
-        // reset local state
-        sessionId = undefined;
-        nickname = undefined;
-        usersBySession.clear();
-        treeDataProvider?.refresh();
-        void vscode.window.showWarningMessage('🔴 Session closed by host');
-        goHome();
-        break;
-      }
-
-      case 'error': {
-        const text = asString((msg as MsgError).message) ?? 'Server error';
-        void vscode.window.showErrorMessage(`❌ ${text}`);
-        break;
-      }
-
-      case 'answerReceived': {
-        const m = msg as { type: 'answerReceived'; name?: string; code?: string };
-        const name = asString(m.name);
-        const code = asString(m.code);
-
-        if (myRole === 'host' && name && typeof code === 'string') {
-          latestAnswers.set(name, code);      // store/update student's latest code
-          answersProvider?.refresh();         // refresh the "ANSWERS" tree view
-
-          // show a notification with action button
-          const choice = await vscode.window.showInformationMessage(
-            `📥 Answer from ${name}`,
-            'Open'
-          );
-          if (choice === 'Open') {
-            vscode.commands.executeCommand('collab-session.openStudentAnswer', name);
-          }
-        }
-        break;
-      }
-
-      case 'feedback': {
-        // student sees feedback from host
-        const m = msg as { type: 'feedback'; from?: string; text?: string };
-        const text = m.text ?? '';
-
-        // open a feedback tab for the student
-        vscode.workspace.openTextDocument({
-          content: `# Feedback from host\n\n${text}`,
-          language: 'markdown'
-        }).then(doc => {
-          vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
-        });
-
-        break;
-      }
-
-
-      default:
-        // ignore unknown
-        break;
+  switch (msg.type) {
+    // session was created (host)
+    case 'created': {
+      const sid = s((msg as MsgCreated).sessionId);
+      if (!sid) return;
+      sessionId = sid;
+      await vscode.env.clipboard.writeText(sid);
+      vscode.window.showInformationMessage(`🟢 Session "${sid}" created & copied to clipboard.`);
+      if (!usersBySession.has(sid)) usersBySession.set(sid, new Set());
+      treeDataProvider?.refresh();
+      break;
     }
-  });
 
-  // wait open/error once
+    // you joined (student)
+    case 'joined': {
+      const m = msg as MsgJoined;
+      const sid = s(m.sessionId);
+      const name = s(m.name);
+      if (!sid || !name) return;
+      sessionId = sid;
+      nickname = name;
+
+      const set = usersBySession.get(sid) ?? new Set<string>();
+      set.add(name);
+      usersBySession.set(sid, set);
+      treeDataProvider?.refresh();
+
+      vscode.window.showInformationMessage(`✅ Joined ${sid} as ${name}`);
+
+      if (typeof m.question === 'string') {
+        latestQuestionText = m.question;
+        await showOrUpdateQuestionEditor(latestQuestionText);
+      }
+      break;
+    }
+
+    // full users list
+    case 'users': {
+      const sid  = s((msg as any).sessionId);
+      const list = asUsers((msg as any).users);
+      if (!sid || !list) return;
+      usersBySession.set(sid, new Set(list.map(u => u.name)));
+      treeDataProvider?.refresh();
+      break;
+    }
+
+    // someone joined
+    case 'userJoined': {
+      const m = msg as MsgUserJoined;
+      if (m.sessionId === sessionId && m.name !== nickname) {
+        vscode.window.showInformationMessage(`👋 ${m.name} joined`);
+      }
+      break;
+    }
+
+    // someone left
+    case 'userLeft': {
+      const m = msg as MsgUserLeft;
+      if (m.sessionId === sessionId) {
+        const set = usersBySession.get(m.sessionId) ?? new Set<string>();
+        set.delete(m.name);
+        usersBySession.set(m.sessionId, set);
+
+        latestAnswers.delete(m.name);
+        answersProvider?.refresh();
+        treeDataProvider?.refresh();
+
+        vscode.window.showInformationMessage(`👋 ${m.name} left`);
+      }
+      break;
+    }
+
+    // question changed
+    case 'question': {
+      const m = msg as MsgQuestion;
+      latestQuestionText = s(m.text) ?? '';
+      await showOrUpdateQuestionEditor(latestQuestionText);
+      break;
+    }
+
+    // host closed session
+    case 'sessionClosed': {
+      sessionId = undefined;
+      nickname = undefined;
+      usersBySession.clear();
+      treeDataProvider?.refresh();
+      vscode.window.showWarningMessage('🔴 Session closed by host');
+      goHome();
+      break;
+    }
+
+    // server error
+    case 'error': {
+      const text = s((msg as MsgError).message) ?? 'Server error';
+      vscode.window.showErrorMessage(`❌ ${text}`);
+      break;
+    }
+
+    // host received an answer (host only)
+    case 'answerReceived': {
+      const m = msg as MsgAnswerReceived;
+      const name = s(m.name);
+      const code = s(m.code);
+      if (myRole === 'host' && name && typeof code === 'string') {
+        latestAnswers.set(name, code);
+        answersProvider?.refresh();
+        const choice = await vscode.window.showInformationMessage(`📥 Answer from ${name}`, 'Open');
+        if (choice === 'Open') {
+          vscode.commands.executeCommand('collab-session.openStudentAnswer', name);
+        }
+      }
+      break;
+    }
+
+    // student got feedback from host
+    case 'feedback': {
+      const m = msg as MsgFeedback;
+      const text = m.text ?? '';
+      const doc = await vscode.workspace.openTextDocument({
+        content: `# Feedback from host\n\n${text}\n`,
+        language: 'markdown'
+      });
+      await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+      break;
+    }
+
+    default:
+      // ignore unknown / forward-compatible
+      break;
+  }
+});
+
+
+  // Wait for initial open/error once before returning
   await new Promise<void>((resolve, reject) => {
     const onOpen = () => { cleanup(); resolve(); };
     const onErr  = (e: unknown) => { cleanup(); reject(e); };
@@ -297,6 +362,7 @@ async function ensureSocket(): Promise<WebSocket> {
 
   return ws!;
 }
+
 
 // ---------- commands ----------------------------------------------------------
 
@@ -685,6 +751,34 @@ export function activate(context: vscode.ExtensionContext) {
     cmdSendFeedback,
     cmdShowQuestion
   );
+
+// -----------------------------------------------------------------------------
+// ⚙️ Command to manually update the Host IP if needed
+// -----------------------------------------------------------------------------
+const cmdSetHostIP = vscode.commands.registerCommand('collab-session.setHostIP', async () => {
+  // 🧾 Get the current saved IP (if any)
+  const current = vscode.workspace.getConfiguration().get<string>('collab.hostIP') || 'localhost';
+
+  // 🧍‍♀️ Ask the user for a new IP
+  const input = await vscode.window.showInputBox({
+    prompt: 'Enter new Host IPv4 (e.g. 192.168.1.187)',
+    value: current
+  });
+
+  // 🚫 If user canceled or left it empty → do nothing
+  if (!input) return;
+
+  // 💾 Save the new IP to global VS Code settings
+  await vscode.workspace.getConfiguration()
+    .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
+
+  // ✅ Confirm the update to the user
+  vscode.window.showInformationMessage(`✅ Host IP updated to ${input}`);
+});
+
+context.subscriptions.push(cmdSetHostIP);
+
+
 }
 
 export function deactivate() {

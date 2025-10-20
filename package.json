@@ -24,7 +24,8 @@
     "onCommand:collab-session.sendFeedback",
     "onView:collabSessionUsers",
     "onView:collabSessionAnswers",
-    "onCommand:collab-session.showQuestion"
+    "onCommand:collab-session.showQuestion",
+    "onCommand:collab-session.setHostIP"
   ],
   "contributes": {
     "commands": [
@@ -67,8 +68,11 @@
       {
         "command": "collab-session.showQuestion",
         "title": "Collab Session: Show Question"
+      },
+      {
+        "command": "collab-session.setHostIP",
+        "title": "Collab Session: Set Host IP"
       }
-
     ],
     "viewsContainers": {
       "activitybar": [
@@ -96,6 +100,16 @@
           "name": "Connected Users"
         }
       ]
+    },
+    "configuration": {
+      "title": "Collab Session",
+      "properties": {
+        "collab.hostIP": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Host IPv4 for the Collab Session server (e.g. 192.168.1.187)."
+        }
+      }
     },
     "menus": {
       "view/title": [
@@ -154,6 +168,7 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
+    "better-sqlite3": "^12.4.1",
     "ws": "^8.18.3"
   }
 }
