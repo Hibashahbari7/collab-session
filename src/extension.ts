@@ -411,7 +411,10 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
     'collabHome',
     'Collab Session – Home',
     vscode.ViewColumn.Active,
-    { enableScripts: true }
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true // keep my inputs/state when I switch tabs
+    }
   );
 
   panel.webview.html = getHomeHtml();
@@ -735,6 +738,7 @@ export function activate(context: vscode.ExtensionContext) {
   treeDataProvider = new SessionTreeProvider();
   vscode.window.registerTreeDataProvider('collabSessionUsers', treeDataProvider);
 
+  // answers tree (only visible if contributed in package.json)
   answersProvider = new AnswersTreeProvider();
   vscode.window.registerTreeDataProvider('collabSessionAnswers', answersProvider);
 
@@ -752,36 +756,40 @@ export function activate(context: vscode.ExtensionContext) {
     cmdShowQuestion
   );
 
-// -----------------------------------------------------------------------------
-// ⚙️ Command to manually update the Host IP if needed
-// -----------------------------------------------------------------------------
-const cmdSetHostIP = vscode.commands.registerCommand('collab-session.setHostIP', async () => {
-  // 🧾 Get the current saved IP (if any)
-  const current = vscode.workspace.getConfiguration().get<string>('collab.hostIP') || 'localhost';
+  // -----------------------------------------------------------------------------
+  // ⚙️ Command to manually update the Host IP if needed
+  // -----------------------------------------------------------------------------
+  const cmdSetHostIP = vscode.commands.registerCommand('collab-session.setHostIP', async () => {
+    // get current saved ip (or localhost as default)
+    const current = vscode.workspace.getConfiguration().get<string>('collab.hostIP') || 'localhost';
 
-  // 🧍‍♀️ Ask the user for a new IP
-  const input = await vscode.window.showInputBox({
-    prompt: 'Enter new Host IPv4 (e.g. 192.168.1.187)',
-    value: current
+    // ask the user for a new ip
+    const input = await vscode.window.showInputBox({
+      prompt: 'Enter new Host IPv4 (e.g. 192.168.1.187)',
+      value: current
+    });
+
+    // user cancelled / empty => do nothing
+    if (!input) return;
+
+    // save to global settings
+    await vscode.workspace.getConfiguration()
+      .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
+
+    vscode.window.showInformationMessage(`✅ Host IP updated to ${input}`);
   });
+  context.subscriptions.push(cmdSetHostIP);
 
-  // 🚫 If user canceled or left it empty → do nothing
-  if (!input) return;
+  // --- auto open Home on activation -------------------------------------------
+  // i want the extension to show the Home webview as soon as it activates
+  void vscode.commands.executeCommand('collab-session.showHome');
 
-  // 💾 Save the new IP to global VS Code settings
-  await vscode.workspace.getConfiguration()
-    .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
-
-  // ✅ Confirm the update to the user
-  vscode.window.showInformationMessage(`✅ Host IP updated to ${input}`);
-});
-
-context.subscriptions.push(cmdSetHostIP);
-
-
+  // debug log (helps me confirm activation flow)
+  console.log('Collab Session extension activated → Home opened automatically.');
 }
 
 export function deactivate() {
   try { ws?.close(); } catch {}
 }
+
 

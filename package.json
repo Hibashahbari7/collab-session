@@ -13,6 +13,7 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
+    "onStartupFinished",
     "onCommand:collab-session.showHome",
     "onCommand:collab-session.createSession",
     "onCommand:collab-session.joinSession",
