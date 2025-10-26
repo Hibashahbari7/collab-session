@@ -73,6 +73,10 @@ let questionDebounce: NodeJS.Timeout | undefined;
 let myAnswerUri: vscode.Uri | undefined;
 let myAnswerEditor: vscode.TextEditor | undefined;
 
+let blockQuestionEditsSub: vscode.Disposable | undefined;
+let suppressRevertLoop = false;   // prevents infinite onDidChangeTextDocument loop
+let warnedReadOnlyOnce = false;   // show warning once per session
+
 
 // ---------- status bar button (student only) ----------
 let sendAnswerStatus: vscode.StatusBarItem | undefined;
@@ -92,6 +96,50 @@ function ensureSendAnswerStatus() {
   } else {
     sendAnswerStatus.hide();
   }
+}
+
+function enableStudentReadOnlyGuard() {
+  try { blockQuestionEditsSub?.dispose(); } catch {}
+  warnedReadOnlyOnce = false;
+
+  blockQuestionEditsSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
+    // only guard when I'm a student and this is the question editor
+    if (myRole !== 'student') return;
+    if (!questionEditor) return;
+    if (e.document.uri.toString() !== questionEditor.document.uri.toString()) return;
+
+    // ignore our own programmatic updates
+    if (suppressRevertLoop) return;
+    // only react to actual user edits
+    if (e.contentChanges.length === 0) return;
+
+    const ed = vscode.window.visibleTextEditors.find(x => x.document === e.document);
+    if (!ed) return;
+
+    // Revert the change to keep it read-only
+    const desired = `# Session question\n\n${latestQuestionText ?? ''}\n`;
+    const full = new vscode.Range(
+      e.document.positionAt(0),
+      e.document.positionAt(e.document.getText().length)
+    );
+
+    suppressRevertLoop = true;
+    try {
+      await ed.edit(
+        b => b.replace(full, desired),
+        { undoStopBefore: false, undoStopAfter: false } // no undo spam
+      );
+    } finally {
+      suppressRevertLoop = false;
+    }
+
+    if (!warnedReadOnlyOnce) {
+      warnedReadOnlyOnce = true;
+      void vscode.window.showWarningMessage(
+        'This question tab is read-only. Use "Collab Session: Open My Answer" to write your solution.'
+      );
+    }
+  });
 }
 
 
@@ -402,9 +450,11 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       // Open question tab immediately (use server question if provided)
       latestQuestionText = typeof m.question === 'string' ? m.question : (latestQuestionText ?? '');
       await showOrUpdateQuestionEditor(latestQuestionText);
-      await openOrFocusMyAnswer();
-      await openMyAnswerTab();
-      ensureSendAnswerStatus();
+      // keep the question tab read-only for students + open "My answer" tab
+      if (myRole === 'student') {
+        enableStudentReadOnlyGuard();
+        await openMyAnswerTab();
+      }
       break;
     }
 
@@ -457,6 +507,8 @@ ws.on('message', async (raw: WebSocket.RawData) => {
 
       latestQuestionText = incoming;
       await showOrUpdateQuestionEditor(incoming);
+      // ensure guard is active for students
+      if (myRole === 'student') enableStudentReadOnlyGuard();      
       break;
     }
 
@@ -470,6 +522,7 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       vscode.window.showWarningMessage('🔴 Session closed by host');
       if (sendAnswerStatus) sendAnswerStatus.hide();
       goHome();
+      try { blockQuestionEditsSub?.dispose(); } catch {}
       break;
     }
 
@@ -759,6 +812,7 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
     void vscode.window.showWarningMessage('You are not in a student session.');
     return;
   }
+  try { blockQuestionEditsSub?.dispose(); } catch {}
   await ensureSocket();
   send({ type: 'leave' }); // server reads sid/name from socketMeta
   sessionId = undefined;
@@ -1138,6 +1192,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+  try { blockQuestionEditsSub?.dispose(); } catch {}
   try { ws?.close(); } catch {}
 }
 

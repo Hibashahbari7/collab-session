@@ -77,6 +77,9 @@ let questionDebounce;
 // --- student answer tab tracking ---
 let myAnswerUri;
 let myAnswerEditor;
+let blockQuestionEditsSub;
+let suppressRevertLoop = false; // prevents infinite onDidChangeTextDocument loop
+let warnedReadOnlyOnce = false; // show warning once per session
 // ---------- status bar button (student only) ----------
 let sendAnswerStatus;
 function ensureSendAnswerStatus() {
@@ -94,6 +97,46 @@ function ensureSendAnswerStatus() {
     else {
         sendAnswerStatus.hide();
     }
+}
+function enableStudentReadOnlyGuard() {
+    try {
+        blockQuestionEditsSub?.dispose();
+    }
+    catch { }
+    warnedReadOnlyOnce = false;
+    blockQuestionEditsSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
+        // only guard when I'm a student and this is the question editor
+        if (myRole !== 'student')
+            return;
+        if (!questionEditor)
+            return;
+        if (e.document.uri.toString() !== questionEditor.document.uri.toString())
+            return;
+        // ignore our own programmatic updates
+        if (suppressRevertLoop)
+            return;
+        // only react to actual user edits
+        if (e.contentChanges.length === 0)
+            return;
+        const ed = vscode.window.visibleTextEditors.find(x => x.document === e.document);
+        if (!ed)
+            return;
+        // Revert the change to keep it read-only
+        const desired = `# Session question\n\n${latestQuestionText ?? ''}\n`;
+        const full = new vscode.Range(e.document.positionAt(0), e.document.positionAt(e.document.getText().length));
+        suppressRevertLoop = true;
+        try {
+            await ed.edit(b => b.replace(full, desired), { undoStopBefore: false, undoStopAfter: false } // no undo spam
+            );
+        }
+        finally {
+            suppressRevertLoop = false;
+        }
+        if (!warnedReadOnlyOnce) {
+            warnedReadOnlyOnce = true;
+            void vscode.window.showWarningMessage('This question tab is read-only. Use "Collab Session: Open My Answer" to write your solution.');
+        }
+    });
 }
 function answerUriForMe() {
     // one untitled buffer per student, nice readable tab title
@@ -386,9 +429,11 @@ async function ensureSocket() {
                 // Open question tab immediately (use server question if provided)
                 latestQuestionText = typeof m.question === 'string' ? m.question : (latestQuestionText ?? '');
                 await showOrUpdateQuestionEditor(latestQuestionText);
-                await openOrFocusMyAnswer();
-                await openMyAnswerTab();
-                ensureSendAnswerStatus();
+                // keep the question tab read-only for students + open "My answer" tab
+                if (myRole === 'student') {
+                    enableStudentReadOnlyGuard();
+                    await openMyAnswerTab();
+                }
                 break;
             }
             // full users list
@@ -433,6 +478,9 @@ async function ensureSocket() {
                 }
                 latestQuestionText = incoming;
                 await showOrUpdateQuestionEditor(incoming);
+                // ensure guard is active for students
+                if (myRole === 'student')
+                    enableStudentReadOnlyGuard();
                 break;
             }
             // host closed session
@@ -445,6 +493,10 @@ async function ensureSocket() {
                 if (sendAnswerStatus)
                     sendAnswerStatus.hide();
                 goHome();
+                try {
+                    blockQuestionEditsSub?.dispose();
+                }
+                catch { }
                 break;
             }
             // server error
@@ -675,6 +727,10 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
         void vscode.window.showWarningMessage('You are not in a student session.');
         return;
     }
+    try {
+        blockQuestionEditsSub?.dispose();
+    }
+    catch { }
     await ensureSocket();
     send({ type: 'leave' }); // server reads sid/name from socketMeta
     sessionId = undefined;
@@ -1009,6 +1065,10 @@ function activate(context) {
     console.log('Collab Session activated → Home opened automatically.');
 }
 function deactivate() {
+    try {
+        blockQuestionEditsSub?.dispose();
+    }
+    catch { }
     try {
         ws?.close();
     }
