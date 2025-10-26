@@ -2,6 +2,73 @@
 
 const WebSocket = require('ws');
 
+// --- SQLite setup (persistent storage) ---
+const Database = require('better-sqlite3');
+
+// create (or open) a local db file next to server.js
+const db = new Database('collab.db');
+
+// reasonable defaults for durability + concurrency
+db.pragma('journal_mode = WAL');
+db.pragma('synchronous = NORMAL');
+
+// minimal schema to track sessions, members, questions, answers, feedback
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions(
+    id TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL,
+    closed_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS members(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    joined_at INTEGER NOT NULL,
+    left_at INTEGER,
+    UNIQUE(session_id, name, joined_at)
+  );
+  CREATE TABLE IF NOT EXISTS questions(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    set_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS answers(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    student TEXT NOT NULL,
+    code TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS feedback(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    to_student TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_members_session ON members(session_id);
+  CREATE INDEX IF NOT EXISTS idx_answers_session ON answers(session_id);
+  CREATE INDEX IF NOT EXISTS idx_feedback_session ON feedback(session_id);
+  CREATE INDEX IF NOT EXISTS idx_questions_session ON questions(session_id);
+`);
+
+// tiny time helper
+const now = () => Date.now();
+
+// prepared statements (fast + safe)
+const insSession       = db.prepare('INSERT OR IGNORE INTO sessions(id, created_at) VALUES(?, ?)');
+const closeSessionStmt = db.prepare('UPDATE sessions SET closed_at=? WHERE id=?');
+
+const insMember  = db.prepare('INSERT INTO members(session_id, name, joined_at) VALUES(?,?,?)');
+const leaveMember= db.prepare('UPDATE members SET left_at=? WHERE session_id=? AND name=? AND left_at IS NULL');
+
+const insQuestion= db.prepare('INSERT INTO questions(session_id, text, set_at) VALUES(?,?,?)');
+const insAnswer  = db.prepare('INSERT INTO answers(session_id, student, code, created_at) VALUES(?,?,?,?)');
+const insFeedback= db.prepare('INSERT INTO feedback(session_id, to_student, text, created_at) VALUES(?,?,?,?)');
+
+
 const PORT = Number(process.env.COLLAB_PORT || process.env.PORT || 3000);
 const wss = new WebSocket.Server({ port: PORT }, () => {
   console.log(`WS server listening on ws://localhost:${PORT}`);
@@ -34,6 +101,10 @@ function pushUsersList(sid) {
 // create session (host)
 function createSession(ws, proposed) {
   let sid = (proposed || '').toUpperCase().trim();
+
+  // persist session creation
+  insSession.run(sid, now());
+
   if (!sid || sessions.has(sid)) {
     sid = Math.random().toString(36).slice(2, 8).toUpperCase();
     while (sessions.has(sid)) sid = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -59,6 +130,8 @@ function joinSession(ws, sid, name) {
   s.users.set(final, ws);
   setMeta(ws, { role: 'student', sid, name: final });
 
+  // persist join
+  insMember.run(sid, final, now());
   send(ws, { type: 'joined', sessionId: sid, name: final, question: s.question || '' });
   broadcastSession(sid, { type: 'userJoined', sessionId: sid, name: final });
   pushUsersList(sid);
@@ -73,6 +146,8 @@ function setQuestion(ws, text) {
   s.question = String(text || '');
   broadcastSession(sid, { type: 'question', text: s.question });
   console.log(`[session ${sid}] question updated`);
+  // persist question update
+  insQuestion.run(sid, s.question, now());
 }
 
 // student answer -> deliver to host
@@ -82,6 +157,8 @@ function handleAnswer(ws, code) {
   const s = sessions.get(sid); if (!s || !s.host) return;
   send(s.host, { type: 'answerReceived', name, code: String(code || '') });
   console.log(`[session ${sid}] answer from ${name}`);
+  // persist answer
+  insAnswer.run(sid, name, String(code || ''), now());
 }
 
 // host feedback -> one student
@@ -93,6 +170,8 @@ function sendFeedback(ws, to, text) {
   if (!target) return send(ws, { type: 'error', message: 'Student not found' });
   send(target, { type: 'feedback', text: String(text || '') });
   console.log(`[session ${sid}] feedback -> ${to}`);
+  // persist feedback
+  insFeedback.run(sid, String(to || ''), String(text || ''), now());
 }
 
 // host closes session
@@ -105,6 +184,8 @@ function closeSession(ws) {
   sessions.delete(sid);
   setMeta(ws, { sid: undefined });
   console.log(`[session ${sid}] closed`);
+  // persist closed_at
+  closeSessionStmt.run(now(), sid);
 }
 
 // cleanup on socket close/error/leave
@@ -126,6 +207,8 @@ function cleanupSocket(ws) {
     broadcastSession(sid, { type: 'userLeft', sessionId: sid, name }, ws);
     pushUsersList(sid);
     console.log(`[session ${sid}] ${name} left`);
+    // persist leave
+    leaveMember.run(now(), sid, name);
   }
 }
 

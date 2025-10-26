@@ -54,7 +54,24 @@ let answersProvider: AnswersTreeProvider | undefined; // tree view for answers
 
 // one stable id per VS Code install (good enough for “one client per machine” guard)
 const MACHINE_ID = vscode.env.machineId;
+// --- Question editor tracking ---
+let questionDoc: vscode.TextDocument | undefined;
+let questionChangeSub: vscode.Disposable | undefined; // when syncing on type
+let questionSaveSub: vscode.Disposable | undefined;   // when syncing on save
 
+// choose the sync mode (true = send only on Ctrl+S, false = live while typing)
+const SYNC_ON_SAVE_ONLY = true;
+
+// prevent double-click create
+let isCreating = false;
+
+function hasActiveHostSession() {
+  return myRole === 'host' && typeof sessionId === 'string' && !!sessionId.trim();
+}
+
+function extractQuestionFrom(doc: vscode.TextDocument): string {
+  return doc.getText().replace(/^#\s*Session question\s*/i, '').trim();
+}
 
   // ---------- tiny helpers ------------------------------------------------------
   const asString = (x: unknown) => (typeof x === 'string' ? x : undefined);
@@ -225,6 +242,8 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       vscode.window.showInformationMessage(`🟢 Session "${sid}" created & copied to clipboard.`);
       if (!usersBySession.has(sid)) usersBySession.set(sid, new Set());
       treeDataProvider?.refresh();
+      latestQuestionText = latestQuestionText ?? '';
+      await showOrUpdateQuestionEditor(latestQuestionText);
       break;
     }
 
@@ -421,10 +440,26 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
   panel.webview.onDidReceiveMessage(async (m) => {
     try {
       if (m?.cmd === 'create') {
+        // don't allow creating while a host session is already active
+        if (hasActiveHostSession()) {
+          void vscode.window.showWarningMessage(
+            `A session is already active (ID: ${sessionId}). Close it first (Collab Session: Close Session).`
+          );
+          return;
+        }
+        if (isCreating) return; // debounce double click
+        isCreating = true;
+
         myRole = 'host';
         await ensureSocket();
-        send({ type: 'create', sessionId: randomId(), machineId: MACHINE_ID });
-      } else if (m?.cmd === 'join') {
+        const sid = randomId();
+        send({ type: 'create', sessionId: sid, machineId: MACHINE_ID });
+
+        // small debounce window
+        setTimeout(() => (isCreating = false), 500);
+      }
+
+      else if (m?.cmd === 'join') {
         myRole = 'student';
         const sid = String(m.sessionId || '').toUpperCase().trim();
         const name = String(m.name || '').trim();
@@ -434,15 +469,21 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
         }
         await ensureSocket();
         send({ type: 'join', sessionId: sid, name, machineId: MACHINE_ID });
-      } else if (m?.cmd === 'setQuestion') {
-        if (myRole !== 'host') {
-          void vscode.window.showWarningMessage('Only host can set question');
+      }
+
+      else if (m?.cmd === 'setQuestion') {
+        // only host with an active session may set question
+        if (!hasActiveHostSession()) {
+          void vscode.window.showWarningMessage('Only host with an active session can set question.');
           return;
         }
         await ensureSocket();
         const text = String(m.text || '');
         latestQuestionText = text;
         send({ type: 'setQuestion', text });
+
+        // open/update the question editor immediately (don't wait for server echo)
+        await showOrUpdateQuestionEditor(text);
       }
     } catch (e) {
       void vscode.window.showErrorMessage(`Failed: ${String(e)}`);
@@ -452,9 +493,20 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
 
 // Collab Session: Create Session (host)
 const cmdCreateSession = vscode.commands.registerCommand('collab-session.createSession', async () => {
+  if (hasActiveHostSession()) {
+    void vscode.window.showWarningMessage(
+      `A session is already active (ID: ${sessionId}). Close it first (Collab Session: Close Session).`
+    );
+    return;
+  }
+  if (isCreating) return;
+  isCreating = true;
+
   myRole = 'host';
   await ensureSocket();
   send({ type: 'create', sessionId: randomId() });
+
+  setTimeout(() => (isCreating = false), 500);
 });
 
 // Collab Session: Join Session (student)
@@ -517,6 +569,7 @@ const cmdCloseSession = vscode.commands.registerCommand('collab-session.closeSes
   treeDataProvider?.refresh();
   void vscode.window.showInformationMessage('Session closed.');
   goHome();
+  myRole = undefined;
 });
 
 // Collab Session: Send My Answer (student -> host)
@@ -571,28 +624,78 @@ const cmdSendFeedback = vscode.commands.registerCommand(
   }
 );
 
-// ---------- question view (single tab) ---------------------------------------
+// Open or refresh the single "Question" editor, and wire up syncing to the server.
+// - If the host edits the question, we broadcast the new text to all students.
+// - Sync mode is controlled by SYNC_ON_SAVE_ONLY:
+//     true  → send only when the host saves (Ctrl+S)
+//     false → send live while typing (on every edit)
 async function showOrUpdateQuestionEditor(text: string) {
-  // open or update a single "question" editor
   try {
+    // 1) Open the question document if it doesn't exist, otherwise update its content.
     if (!questionEditor || questionEditor.document.isClosed) {
+      // Create a fresh untitled markdown doc with a header and the current question text
       const doc = await vscode.workspace.openTextDocument({
         content: `# Session question\n\n${text}\n`,
         language: 'markdown'
       });
+      // Show it (non-preview so it stays pinned)
       questionEditor = await vscode.window.showTextDocument(doc, { preview: false });
-      return;
+      questionDoc = doc;
+    } else {
+      // Reuse the existing editor/document and replace the full content
+      const doc = questionEditor.document;
+      questionDoc = doc;
+      const full = new vscode.Range(
+        doc.positionAt(0),
+        doc.positionAt(doc.getText().length)
+      );
+      await questionEditor.edit(ed =>
+        ed.replace(full, `# Session question\n\n${text}\n`)
+      );
     }
 
-    const full = new vscode.Range(
-      questionEditor.document.positionAt(0),
-      questionEditor.document.positionAt(questionEditor.document.getText().length)
-    );
-    await questionEditor.edit(edit => edit.replace(full, `# Session question\n\n${text}\n`));
-  } catch {
-    // keep quiet
+    // 2) Make sure we don't stack multiple listeners:
+    //    dispose any previous subscriptions (save/edit) before registering again.
+    try { questionChangeSub?.dispose(); } catch {}
+    try { questionSaveSub?.dispose(); } catch {}
+
+    // 3) Register the sync behavior according to the chosen mode
+    if (SYNC_ON_SAVE_ONLY) {
+      // A) Send only when the host saves the document (Ctrl+S)
+      questionSaveSub = vscode.workspace.onDidSaveTextDocument(async (doc) => {
+        // Guard: only react for our question doc and only for an active host session
+        if (!questionDoc || doc.uri.toString() !== questionDoc.uri.toString()) return;
+        if (myRole !== 'host' || !sessionId) return;
+
+        // Extract the question text (drop the markdown header), cache, and send to server
+        const updated = extractQuestionFrom(doc);
+        latestQuestionText = updated;
+        await ensureSocket();
+        send({ type: 'setQuestion', text: updated });
+
+        // Optional UX toast for confirmation
+        void vscode.window.showInformationMessage('Question updated & sent to students.');
+      });
+    } else {
+      // B) Live mode: send on every text change while the host is editing
+      questionChangeSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
+        // Guard: only react for our question doc and only for an active host session
+        if (!questionDoc || e.document.uri.toString() !== questionDoc.uri.toString()) return;
+        if (myRole !== 'host' || !sessionId) return;
+
+        // Extract, cache, and broadcast the updated question on each edit
+        const updated = extractQuestionFrom(e.document);
+        latestQuestionText = updated;
+        await ensureSocket();
+        send({ type: 'setQuestion', text: updated });
+      });
+    }
+  } catch (err) {
+    // Be quiet in UI; just log for diagnostics
+    console.error('Error updating question editor', err);
   }
 }
+
 
 // Collab Session: Show Question (host or student)
 const cmdShowQuestion = vscode.commands.registerCommand('collab-session.showQuestion', async () => {
