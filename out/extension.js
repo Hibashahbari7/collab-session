@@ -74,6 +74,41 @@ let questionDoc;
 let questionChangeSub;
 let questionSaveSub;
 let questionDebounce;
+let myAnswerUri;
+let myAnswerEditor;
+// ---------- status bar button (student only) ----------
+let sendAnswerStatus;
+function ensureSendAnswerStatus() {
+    if (!sendAnswerStatus) {
+        sendAnswerStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
+        sendAnswerStatus.command = 'collab-session.sendAnswer';
+        sendAnswerStatus.text = '$(paper-airplane) Send My Answer';
+        sendAnswerStatus.tooltip = 'Send your current answer to the host';
+        sendAnswerStatus.show(); // show it immediately when created
+    }
+    // show or hide based on role/session
+    if (myRole === 'student' && sessionId) {
+        sendAnswerStatus.show();
+    }
+    else {
+        sendAnswerStatus.hide();
+    }
+}
+function answerUriForMe() {
+    // one untitled buffer per student, nice readable tab title
+    return vscode.Uri.parse(`untitled:answer-${nickname ?? 'student'}.md`);
+}
+async function openOrFocusMyAnswer() {
+    const uri = answerUriForMe();
+    myAnswerUri = uri;
+    // try reuse
+    let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+    if (!doc) {
+        const template = `# My answer (${nickname ?? 'student'})\n\n`;
+        doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: template });
+    }
+    myAnswerEditor = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+}
 // read current config
 function readSyncMode() {
     return vscode.workspace.getConfiguration('collab').get('syncOnSaveOnly', true);
@@ -332,6 +367,8 @@ async function ensureSocket() {
                 // Open question tab immediately (use server question if provided)
                 latestQuestionText = typeof m.question === 'string' ? m.question : (latestQuestionText ?? '');
                 await showOrUpdateQuestionEditor(latestQuestionText);
+                await openOrFocusMyAnswer();
+                ensureSendAnswerStatus();
                 break;
             }
             // full users list
@@ -385,6 +422,8 @@ async function ensureSocket() {
                 usersBySession.clear();
                 treeDataProvider?.refresh();
                 vscode.window.showWarningMessage('🔴 Session closed by host');
+                if (sendAnswerStatus)
+                    sendAnswerStatus.hide();
                 goHome();
                 break;
             }
@@ -609,6 +648,7 @@ const cmdCopySessionId = vscode.commands.registerCommand('collab-session.copySes
     await vscode.env.clipboard.writeText(sessionId);
     void vscode.window.showInformationMessage(`Copied: ${sessionId}`);
 });
+const cmdOpenMyAnswer = vscode.commands.registerCommand('collab-session.openMyAnswer', openOrFocusMyAnswer);
 // Collab Session: Leave Session (student)
 const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSession', async () => {
     if (!sessionId || !nickname || myRole !== 'student') {
@@ -622,6 +662,8 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
     usersBySession.clear();
     treeDataProvider?.refresh();
     void vscode.window.showInformationMessage('You left the session.');
+    if (sendAnswerStatus)
+        sendAnswerStatus.hide();
     goHome();
 });
 // Collab Session: Close Session (host)
@@ -645,12 +687,15 @@ const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer
         void vscode.window.showWarningMessage('Join a session as student first.');
         return;
     }
-    const ed = vscode.window.activeTextEditor;
-    if (!ed) {
-        void vscode.window.showWarningMessage('Open a file to send.');
+    const fallback = vscode.window.activeTextEditor?.document;
+    const doc = (myAnswerEditor && !myAnswerEditor.document.isClosed)
+        ? myAnswerEditor.document
+        : fallback;
+    if (!doc) {
+        void vscode.window.showWarningMessage('Open your answer tab first.');
         return;
     }
-    const code = ed.document.getText();
+    const code = doc.getText();
     await ensureSocket();
     send({ type: 'answer', sessionId, name: nickname, code });
     void vscode.window.showInformationMessage('Answer sent to host.');
@@ -887,7 +932,7 @@ function activate(context) {
     answersProvider = new AnswersTreeProvider();
     vscode.window.registerTreeDataProvider('collabSessionAnswers', answersProvider);
     // --- core commands
-    context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion);
+    context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion, cmdOpenMyAnswer);
     // ---------------------------------------------------------------------------
     // ⚙️ Set Host IP (manual override stored in settings)
     // ---------------------------------------------------------------------------
