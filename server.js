@@ -1,238 +1,168 @@
-// server.js
-// -----------------------------------------------------------------------------
-// Collab Session - WebSocket server
-// Host can create session, students join, host can set question, students send
-// answers, notifications for join/leave/close.
-// -----------------------------------------------------------------------------
+// server.js — Collab Session WebSocket backend (MVP)
 
-// ✅ Import ws ONCE
-const { WebSocketServer } = require('ws');
+const WebSocket = require('ws');
 
-// ✅ Dynamic IPv4 detection (just for pretty logging + info)
-const os = require('os');
-function getLocalIPv4() {
-  const interfaces = os.networkInterfaces();
-  for (const name in interfaces) {
-    for (const net of interfaces[name]) {
-      if (net.family === 'IPv4' && !net.internal) return net.address;
-    }
-  }
-  return 'localhost';
-}
-
-// ✅ Host/Port config
-// - HOST: 0.0.0.0 to listen on all interfaces (LAN)
-// - PORT: prefer COLLAB_PORT, then PORT, else default 3000
-const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.COLLAB_PORT || process.env.PORT || 3000);
+const wss = new WebSocket.Server({ port: PORT }, () => {
+  console.log(`WS server listening on ws://localhost:${PORT}`);
+});
 
-// ✅ SQLite setup (persist answers)
-const Database = require('better-sqlite3');
-const db = new Database('collab.db');
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS answers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sessionId TEXT,
-    studentName TEXT,
-    code TEXT,
-    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`).run();
-console.log('📁 Database ready: collab.db');
+// sid -> { host: ws, users: Map<name, ws>, question?: string }
+const sessions = new Map();
 
-// In-memory state
-const sessions = new Map();      // sid -> { sid, owner, ownerMachineId, users: Map<name,{socket,machineId}>, question }
-const socketMeta = new WeakMap();
+// helpers
+function send(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch {} }
+function safeParse(buf) { try { return JSON.parse(String(buf)); } catch { return null; } }
+function setMeta(ws, meta) { ws.__meta = Object.assign(ws.__meta || {}, meta); }
+function getMeta(ws) { return ws.__meta || {}; }
 
-// Helpers
-function broadcast(session, payload) {
-  const json = JSON.stringify(payload);
-  session.users.forEach(({ socket }) => { try { socket.send(json); } catch {} });
-  try { session.owner?.send(json); } catch {}
-}
-function getOrCreateSession(sid, ownerSocket, ownerMachineId) {
-  if (!sessions.has(sid)) {
-    sessions.set(sid, { sid, owner: ownerSocket, ownerMachineId, users: new Map(), question: '' });
+function broadcastSession(sid, payload, exclude = null) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  if (s.host && s.host.readyState === WebSocket.OPEN && s.host !== exclude) send(s.host, payload);
+  for (const sock of s.users.values()) {
+    if (sock.readyState === WebSocket.OPEN && sock !== exclude) send(sock, payload);
   }
-  return sessions.get(sid);
 }
-function usersPayload(session) { return [...session.users.keys()].map(n => ({ name: n })); }
-function safeSend(sock, payload) { try { sock.send(JSON.stringify(payload)); } catch {} }
+function pushUsersList(sid) {
+  const s = sessions.get(sid);
+  if (!s) return;
+  const users = [...s.users.keys()].map(name => ({ name }));
+  broadcastSession(sid, { type: 'users', sessionId: sid, users });
+}
 
-// ✅ Create ONE WebSocketServer instance (لا تكرّريه)
-const wss = new WebSocketServer({ host: HOST, port: PORT }, () => {
-  console.log(`Server bound at ws://${HOST}:${PORT}`);
-});
+// create session (host)
+function createSession(ws, proposed) {
+  let sid = (proposed || '').toUpperCase().trim();
+  if (!sid || sessions.has(sid)) {
+    sid = Math.random().toString(36).slice(2, 8).toUpperCase();
+    while (sessions.has(sid)) sid = Math.random().toString(36).slice(2, 8).toUpperCase();
+  }
+  sessions.set(sid, { host: ws, users: new Map(), question: '' });
+  setMeta(ws, { role: 'host', sid });
+  send(ws, { type: 'created', sessionId: sid });
+  pushUsersList(sid);
+  console.log(`[session ${sid}] created`);
+}
 
-// Print the *actual* bound address (no confusion if HOST was 0.0.0.0)
-wss.on('listening', () => {
-  // ws exposes the underlying net.Server .address()
-  const addr = wss.address(); // { address: '192.168.1.187', port: 3000, family: 'IPv4' }
-  console.log(`websocket server listening on ws://${addr.address}:${addr.port}`);
-});
+// join session (student)
+function joinSession(ws, sid, name) {
+  sid = (sid || '').toUpperCase().trim();
+  name = String(name || '').trim();
+  const s = sessions.get(sid);
+  if (!sid || !name || !s) return send(ws, { type: 'error', message: 'Invalid session or name' });
 
-// Connection handler
-wss.on('connection', (socket) => {
-  socketMeta.set(socket, { isAlive: true });
+  // ensure unique name
+  let final = name, i = 2;
+  while (s.users.has(final)) final = `${name}-${i++}`;
 
-  socket.on('pong', () => {
-    const meta = socketMeta.get(socket);
-    if (meta) meta.isAlive = true;
-  });
+  s.users.set(final, ws);
+  setMeta(ws, { role: 'student', sid, name: final });
 
-  socket.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(String(raw)); } catch { return; }
+  send(ws, { type: 'joined', sessionId: sid, name: final, question: s.question || '' });
+  broadcastSession(sid, { type: 'userJoined', sessionId: sid, name: final });
+  pushUsersList(sid);
+  console.log(`[session ${sid}] ${final} joined`);
+}
 
-    // --- CREATE (host) ---
-    if (msg.type === 'create') {
-      const sid = String(msg.sessionId || '').toUpperCase();
-      const machineId = String(msg.machineId || '').trim();
-      if (!sid) return safeSend(socket, { type: 'error', message: 'Bad session id' });
+// set question (host)
+function setQuestion(ws, text) {
+  const { role, sid } = getMeta(ws);
+  if (role !== 'host' || !sid) return send(ws, { type: 'error', message: 'Only host can set question' });
+  const s = sessions.get(sid); if (!s) return;
+  s.question = String(text || '');
+  broadcastSession(sid, { type: 'question', text: s.question });
+  console.log(`[session ${sid}] question updated`);
+}
 
-      const alreadyOwnerBySocket  = [...sessions.values()].some(s => s.owner === socket);
-      const alreadyOwnerByMachine = [...sessions.values()].some(s => s.ownerMachineId === machineId);
-      if (alreadyOwnerBySocket || alreadyOwnerByMachine) {
-        return safeSend(socket, { type: 'error', message: 'You already own a session on this machine' });
-      }
+// student answer -> deliver to host
+function handleAnswer(ws, code) {
+  const { role, sid, name } = getMeta(ws);
+  if (role !== 'student' || !sid || !name) return;
+  const s = sessions.get(sid); if (!s || !s.host) return;
+  send(s.host, { type: 'answerReceived', name, code: String(code || '') });
+  console.log(`[session ${sid}] answer from ${name}`);
+}
 
-      const s = getOrCreateSession(sid, socket, machineId);
-      socketMeta.set(socket, { sid, role: 'host', isAlive: true, machineId });
+// host feedback -> one student
+function sendFeedback(ws, to, text) {
+  const { role, sid } = getMeta(ws);
+  if (role !== 'host' || !sid) return send(ws, { type: 'error', message: 'Only host can send feedback' });
+  const s = sessions.get(sid); if (!s) return;
+  const target = s.users.get(String(to || '').trim());
+  if (!target) return send(ws, { type: 'error', message: 'Student not found' });
+  send(target, { type: 'feedback', text: String(text || '') });
+  console.log(`[session ${sid}] feedback -> ${to}`);
+}
 
-      safeSend(socket, { type: 'created', sessionId: sid });
-      broadcast(s, { type: 'users', sessionId: sid, users: usersPayload(s) });
-      if (s.question) broadcast(s, { type: 'question', text: s.question });
-      return;
-    }
+// host closes session
+function closeSession(ws) {
+  const { role, sid } = getMeta(ws);
+  if (role !== 'host' || !sid) return;
+  const s = sessions.get(sid); if (!s) return;
+  broadcastSession(sid, { type: 'sessionClosed' });
+  for (const sock of s.users.values()) setMeta(sock, { sid: undefined });
+  sessions.delete(sid);
+  setMeta(ws, { sid: undefined });
+  console.log(`[session ${sid}] closed`);
+}
 
-    // --- JOIN (student) ---
-    if (msg.type === 'join') {
-      const sid = String(msg.sessionId || '').toUpperCase();
-      const name = String(msg.name || '').trim();
-      const machineId = String(msg.machineId || '').trim();
-      const s = sessions.get(sid);
-      if (!s) return safeSend(socket, { type: 'error', message: 'Invalid session' });
-      if (!name) return safeSend(socket, { type: 'error', message: 'Name required' });
+// cleanup on socket close/error/leave
+function cleanupSocket(ws) {
+  const { role, sid, name } = getMeta(ws);
+  if (!sid) return;
+  const s = sessions.get(sid); if (!s) return;
 
-      if (s.users.has(name)) {
-        return safeSend(socket, { type: 'error', message: 'Name already used' });
-      }
+  if (role === 'host') {
+    broadcastSession(sid, { type: 'sessionClosed' }, ws);
+    for (const sock of s.users.values()) setMeta(sock, { sid: undefined });
+    sessions.delete(sid);
+    console.log(`[session ${sid}] host disconnected -> closed`);
+    return;
+  }
 
-      const sameMachineAlreadyIn =
-        [...s.users.values()].some(u => u.machineId === machineId) || s.ownerMachineId === machineId;
-      if (sameMachineAlreadyIn) {
-        return safeSend(socket, { type: 'error', message: 'This machine already participates in this session' });
-      }
+  if (role === 'student' && name) {
+    if (s.users.get(name) === ws) s.users.delete(name);
+    broadcastSession(sid, { type: 'userLeft', sessionId: sid, name }, ws);
+    pushUsersList(sid);
+    console.log(`[session ${sid}] ${name} left`);
+  }
+}
 
-      s.users.set(name, { socket, machineId });
-      socketMeta.set(socket, { sid, name, role: 'student', isAlive: true, machineId });
+// heartbeat
+const HEARTBEAT_MS = 30000;
+function heartbeat(ws) { ws.isAlive = true; }
 
-      safeSend(socket, { type: 'joined', sessionId: sid, name, question: s.question || '' });
-      broadcast(s, { type: 'users', sessionId: sid, users: usersPayload(s) });
-      broadcast(s, { type: 'userJoined', sessionId: sid, name });
-      return;
-    }
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => heartbeat(ws));
 
-    // --- SET QUESTION (host) ---
-    if (msg.type === 'setQuestion') {
-      const s = [...sessions.values()].find(x => x.owner === socket);
-      if (!s) return safeSend(socket, { type: 'error', message: 'Not a host' });
-      s.question = String(msg.text || '');
-      broadcast(s, { type: 'question', text: s.question });
-      return;
-    }
+  ws.on('message', (buf) => {
+    const msg = safeParse(buf);
+    if (!msg || typeof msg.type !== 'string') return send(ws, { type: 'error', message: 'Bad message' });
 
-    // --- ANSWER (student -> host) ---
-    if (msg.type === 'answer') {
-      const sid  = String(msg.sessionId || '').toUpperCase();
-      const name = String(msg.name || '').trim();
-      const code = String(msg.code || '');
-      const s = sessions.get(sid);
-      if (!s) return;
-
-      // 💾 Save answer to DB
-      db.prepare('INSERT INTO answers (sessionId, studentName, code) VALUES (?, ?, ?)')
-        .run(sid, name, code);
-      console.log(`Saved answer from ${name} (session ${sid})`);
-
-      safeSend(s.owner, { type: 'answerReceived', name, code });
-      return;
-    }
-
-    // --- LEAVE (student) ---
-    if (msg.type === 'leave') {
-      const m   = socketMeta.get(socket) || {};
-      const sid = String(msg.sessionId || m.sid || '').toUpperCase();
-      const name = String(msg.name || m.name || '').trim();
-      const s = sessions.get(sid);
-      if (s && name && s.users.delete(name)) {
-        broadcast(s, { type: 'userLeft', sessionId: sid, name });
-        broadcast(s, { type: 'users',   sessionId: sid, users: usersPayload(s) });
-      }
-      socketMeta.set(socket, { isAlive: true });
-      return;
-    }
-
-    // --- CLOSE (host) ---
-    if (msg.type === 'close') {
-      for (const [sid, s] of sessions) {
-        if (s.owner === socket) {
-          broadcast(s, { type: 'sessionClosed' });
-          s.users.forEach(({ socket: ws }) => { try { ws.close(); } catch {} });
-          sessions.delete(sid);
-          socketMeta.set(socket, { isAlive: true });
-          break;
-        }
-      }
-      return;
-    }
-
-    // --- FEEDBACK (host -> one student) ---
-    if (msg.type === 'feedback') {
-      const sid  = String(msg.sessionId || '').toUpperCase();
-      const to   = String(msg.to || '').trim();
-      const text = String(msg.text || '');
-      const s = sessions.get(sid);
-      if (!s || !to || !text) return;
-      const target = s.users.get(to);
-      if (target?.socket) safeSend(target.socket, { type: 'feedback', from: 'host', text });
-      return;
+    switch (msg.type) {
+      case 'create': createSession(ws, msg.sessionId); break;
+      case 'join': joinSession(ws, msg.sessionId, msg.name); break;
+      case 'setQuestion': setQuestion(ws, msg.text); break;
+      case 'answer': handleAnswer(ws, msg.code); break;
+      case 'feedback': sendFeedback(ws, msg.to, msg.text); break;
+      case 'close': closeSession(ws); break;
+      case 'leave': cleanupSocket(ws); break;
+      default: send(ws, { type: 'error', message: 'Unknown type' });
     }
   });
 
-  // Disconnect cleanup
-  socket.on('close', () => {
-    const meta = socketMeta.get(socket) || {};
-    const sid  = meta.sid;
-    const role = meta.role;
-    const name = meta.name;
-    if (!sid) return;
-    const s = sessions.get(sid);
-    if (!s) return;
-
-    if (role === 'host') {
-      broadcast(s, { type: 'sessionClosed' });
-      s.users.forEach(({ socket: ws }) => { try { ws.close(); } catch {} });
-      sessions.delete(sid);
-    } else if (role === 'student' && name) {
-      if (s.users.delete(name)) {
-        broadcast(s, { type: 'userLeft', sessionId: sid, name });
-        broadcast(s, { type: 'users',   sessionId: sid, users: usersPayload(s) });
-      }
-    }
-  });
+  ws.on('close', () => cleanupSocket(ws));
+  ws.on('error', () => cleanupSocket(ws));
 });
 
-// Heartbeat (ping/pong)
 const interval = setInterval(() => {
-  wss.clients.forEach(ws => {
-    const meta = socketMeta.get(ws);
-    if (!meta) return;
-    if (meta.isAlive === false) { try { ws.terminate(); } catch {} }
-    meta.isAlive = false;
-    socketMeta.set(ws, meta);
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) { try { ws.terminate(); } catch {} return; }
+    ws.isAlive = false;
     try { ws.ping(); } catch {}
   });
-}, 30000);
+}, HEARTBEAT_MS);
 
 wss.on('close', () => clearInterval(interval));

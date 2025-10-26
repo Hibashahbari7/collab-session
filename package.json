@@ -87,10 +87,6 @@
     "views": {
       "collabSession": [
         {
-          "id": "collabSessionHome",
-          "name": "Home"
-        },
-        {
           "id": "collabSessionAnswers",
           "name": "Answers"
         }
@@ -108,7 +104,7 @@
         "collab.hostIP": {
           "type": "string",
           "default": "localhost",
-          "description": "Host IPv4 for the Collab Session server (e.g. 192.168.1.187)."
+          "description": "Host IPv4 or WSS URL for the Collab Session server (e.g. 192.168.1.187 or wss://your-ngrok-domain)."
         }
       }
     },
@@ -155,7 +151,11 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+
+    "server": "node server.js",
+    "server:port": "cross-env COLLAB_PORT=3000 node server.js",
+    "dev": "nodemon --watch server.js server.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.1",
@@ -166,8 +166,10 @@
     "eslint": "^8.56.0",
     "glob": "^10.4.5",
     "mocha": "^10.2.0",
-    "typescript": "^5.3.3"
-  },
+    "typescript": "^5.3.3",
+    "nodemon": "^3.1.0",
+    "cross-env": "^7.0.3"
+    },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
     "ws": "^8.18.3"
