@@ -36,9 +36,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS answers(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
-    student TEXT NOT NULL,
+    name TEXT NOT NULL,
     code TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    submitted_at INTEGER,
+    filename TEXT
   );
   CREATE TABLE IF NOT EXISTS feedback(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +66,7 @@ const insMember  = db.prepare('INSERT INTO members(session_id, name, joined_at) 
 const leaveMember= db.prepare('UPDATE members SET left_at=? WHERE session_id=? AND name=? AND left_at IS NULL');
 
 const insQuestion= db.prepare('INSERT INTO questions(session_id, text, set_at) VALUES(?,?,?)');
-const insAnswer  = db.prepare('INSERT INTO answers(session_id, student, code, created_at) VALUES(?,?,?,?)');
+const insAnswer = db.prepare('INSERT INTO answers(session_id, name, code, submitted_at, filename) VALUES (?, ?, ?, ?, ?)');
 const insFeedback= db.prepare('INSERT INTO feedback(session_id, to_student, text, created_at) VALUES(?,?,?,?)');
 
 
@@ -151,15 +152,31 @@ function setQuestion(ws, text) {
 }
 
 // student answer -> deliver to host
-function handleAnswer(ws, code) {
+function handleAnswer(ws, payload) {
   const { role, sid, name } = getMeta(ws);
   if (role !== 'student' || !sid || !name) return;
-  const s = sessions.get(sid); if (!s || !s.host) return;
-  send(s.host, { type: 'answerReceived', name, code: String(code || '') });
-  console.log(`[session ${sid}] answer from ${name}`);
-  // persist answer
-  insAnswer.run(sid, name, String(code || ''), now());
+
+  const s = sessions.get(sid);
+  if (!s || !s.host) return;
+
+  // extract code + filename safely
+  const code = typeof payload === 'object' ? String(payload.code || '') : String(payload || '');
+  const filename = typeof payload === 'object' ? String(payload.filename || '') : 'answer.txt';
+
+  // deliver to host with filename
+  send(s.host, {
+    type: 'answerReceived',
+    name,
+    code,
+    filename, // 👈 send filename too
+  });
+
+  console.log(`[session ${sid}] answer from ${name} (${filename})`);
+
+  // persist answer in DB if needed
+  insAnswer.run(sid, name, code, now(), filename)
 }
+
 
 // host feedback -> one student
 function sendFeedback(ws, to, text) {
@@ -228,7 +245,7 @@ wss.on('connection', (ws) => {
       case 'create': createSession(ws, msg.sessionId); break;
       case 'join': joinSession(ws, msg.sessionId, msg.name); break;
       case 'setQuestion': setQuestion(ws, msg.text); break;
-      case 'answer': handleAnswer(ws, msg.code); break;
+      case 'answer': handleAnswer(ws, msg); break;
       case 'feedback': sendFeedback(ws, msg.to, msg.text); break;
       case 'close': closeSession(ws); break;
       case 'leave': cleanupSocket(ws); break;
