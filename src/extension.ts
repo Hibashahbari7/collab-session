@@ -56,10 +56,11 @@ let answersProvider: AnswersTreeProvider | undefined; // tree view for answers
 const MACHINE_ID = vscode.env.machineId;
 
 // choose the sync mode (true = send only on Ctrl+S, false = live while typing)
-const SYNC_ON_SAVE_ONLY = true;
+const SYNC_ON_SAVE_ONLY = false;
 
 // prevent double-click create
 let isCreating = false;
+let isJoining = false; // prevent double-join clicks
 
 // --- Question editor tracking ---
 let questionDoc: vscode.TextDocument | undefined;
@@ -308,11 +309,12 @@ ws.on('message', async (raw: WebSocket.RawData) => {
     // you joined (student)
     case 'joined': {
       const m = msg as MsgJoined;
-      const sid = s(m.sessionId);
-      const name = s(m.name);
+      const sid  = asString(m.sessionId);
+      const name = asString(m.name);
       if (!sid || !name) return;
+
       sessionId = sid;
-      nickname = name;
+      nickname  = name;
 
       const set = usersBySession.get(sid) ?? new Set<string>();
       set.add(name);
@@ -321,12 +323,13 @@ ws.on('message', async (raw: WebSocket.RawData) => {
 
       vscode.window.showInformationMessage(`✅ Joined ${sid} as ${name}`);
 
-      if (typeof m.question === 'string') {
-        latestQuestionText = m.question;
-        await showOrUpdateQuestionEditor(latestQuestionText);
-      }
+      // Open question tab immediately (use server question if provided)
+      latestQuestionText = typeof m.question === 'string' ? m.question : (latestQuestionText ?? '');
+      await showOrUpdateQuestionEditor(latestQuestionText);
+
       break;
     }
+
 
     // full users list
     case 'users': {
@@ -497,6 +500,7 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
   panel.webview.html = getHomeHtml();
   panel.webview.onDidReceiveMessage(async (m) => {
     try {
+      // -------------------- Create (Host) --------------------
       if (m?.cmd === 'create') {
         // don't allow creating while a host session is already active
         if (hasActiveHostSession()) {
@@ -517,20 +521,39 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
         setTimeout(() => (isCreating = false), 500);
       }
 
+      // -------------------- Join (Student) --------------------
       else if (m?.cmd === 'join') {
+        // already joining? ignore second click
+        if (isJoining) return;
+        isJoining = true;
+
+        // if already in a student session, require leaving first
+        if (sessionId && myRole === 'student') {
+          isJoining = false;
+          void vscode.window.showWarningMessage(
+            `Already in session ${sessionId}. Leave it first before joining another.`
+          );
+          return;
+        }
+
         myRole = 'student';
-        const sid = String(m.sessionId || '').toUpperCase().trim();
+        const sid  = String(m.sessionId || '').toUpperCase().trim();
         const name = String(m.name || '').trim();
         if (!sid || !name) {
+          isJoining = false;
           void vscode.window.showWarningMessage('Session ID and Name are required');
           return;
         }
+
         await ensureSocket();
         send({ type: 'join', sessionId: sid, name, machineId: MACHINE_ID });
+
+        // light debounce so double-clicks don’t send twice
+        setTimeout(() => { isJoining = false; }, 800);
       }
 
+      // -------------------- Set Question (Host) --------------------
       else if (m?.cmd === 'setQuestion') {
-        // only host with an active session may set question
         if (!hasActiveHostSession()) {
           void vscode.window.showWarningMessage('Only host with an active session can set question.');
           return;
@@ -538,15 +561,21 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
         await ensureSocket();
         const text = String(m.text || '');
         latestQuestionText = text;
+
+        // send to server
         send({ type: 'setQuestion', text });
 
-        // open/update the question editor immediately (don't wait for server echo)
+        // update local editor immediately (don’t wait for echo)
         await showOrUpdateQuestionEditor(text);
       }
     } catch (e) {
+      // reset guards on error
+      isJoining = false;
+      isCreating = false;
       void vscode.window.showErrorMessage(`Failed: ${String(e)}`);
     }
   });
+
 });
 
 // Collab Session: Create Session (host)
@@ -682,38 +711,53 @@ const cmdSendFeedback = vscode.commands.registerCommand(
   }
 );
 
+function getQuestionTargetUri(): vscode.Uri {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (root) {
+    return vscode.Uri.joinPath(root, '.vscode', 'collab-question.md'); // real file
+  }
+  return vscode.Uri.parse('untitled:collab-question.md'); // single untitled tab
+}
+
+async function ensureQuestionFileExists(target: vscode.Uri, initial: string) {
+  if (target.scheme === 'untitled') return; // nothing to create on disk
+  // ensure .vscode folder
+  try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..')); } catch {}
+  // create file once if missing
+  try { await vscode.workspace.fs.stat(target); }
+  catch { await vscode.workspace.fs.writeFile(target, Buffer.from(initial, 'utf8')); }
+}
+
+
+
 async function showOrUpdateQuestionEditor(text: string) {
   try {
-    // open/create real file so Ctrl+S works without “Save As”
-    const target = getQuestionFileUri();
-    let doc: vscode.TextDocument;
+    const target = getQuestionTargetUri();
+    const desired = `# Session question\n\n${text}\n`;
 
-    if (target) {
-      await ensureQuestionDir();
-      const initial = `# Session question\n\n${text}\n`;
-      try { await vscode.workspace.fs.stat(target); }
-      catch { await vscode.workspace.fs.writeFile(target, Buffer.from(initial, 'utf8')); }
+    // Try to reuse an already-open doc with the same URI
+    let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === target.toString());
+
+    if (!doc) {
+      // Ensure file exists (workspace) or just open the untitled doc (no workspace)
+      await ensureQuestionFileExists(target, desired);
       doc = await vscode.workspace.openTextDocument(target);
-    } else {
-      // fallback if no workspace
-      doc = await vscode.workspace.openTextDocument({ content: `# Session question\n\n${text}\n`, language: 'markdown' });
     }
 
-    // show + adjust content if changed
-    const shown = await vscode.window.showTextDocument(doc, { preview: false });
-    questionEditor = shown;
-    questionDoc = doc;
+    // Show the doc (this focuses existing tab instead of opening a new one)
+    const editor = await vscode.window.showTextDocument(doc, { preview: false });
+    questionEditor = editor;
 
-    const desired = `# Session question\n\n${text}\n`;
+    // Replace content only if different (prevents extra edits/loops)
     if (doc.getText() !== desired) {
       const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-      await shown.edit(ed => ed.replace(full, desired));
-      // silent save for real files
+      await editor.edit(ed => ed.replace(full, desired));
       if (doc.uri.scheme !== 'untitled') { try { await doc.save(); } catch {} }
     }
 
-    // (re)wire sync listeners based on current mode
-    wireQuestionSyncListeners();
+    // (Re)wire listeners according to your current mode
+    wireQuestionSyncListeners(); // uses questionEditor internally
+
   } catch (err) {
     console.error('Error updating question editor', err);
   }
