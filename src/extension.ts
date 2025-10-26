@@ -574,30 +574,44 @@ ws.on('message', async (raw: WebSocket.RawData) => {
 
     // host received an answer (host only)
     case 'answerReceived': {
-      const m = msg as MsgAnswerReceived;
+      // Accept optional filename/languageId sent by the student
+      const m = msg as MsgAnswerReceived & { filename?: string; languageId?: string };
+
       const name = asString(m.name);
       const code = asString(m.code);
-      const filename = asString(m.filename) ?? `Answer_from_${name ?? 'student'}.txt`;
+      if (myRole !== 'host' || !name || typeof code !== 'string') break;
 
-      if (myRole === 'host' && name && typeof code === 'string') {
-        latestAnswers.set(name, code);
-        answersProvider?.refresh();
+      // Persist latest answer and refresh the tree
+      latestAnswers.set(name, code);
+      answersProvider?.refresh();
 
-        const choice = await vscode.window.showInformationMessage(
-          `📥 Answer from ${name} • ${filename}`, 'Open'
-        );
-        if (choice === 'Open') {
-          // Open a tab titled with the filename (untitled so we don't touch disk)
-          const uri = vscode.Uri.parse(`untitled:${filename}`);
-          const doc = await vscode.workspace.openTextDocument({
-            language: guessLanguage(code) ?? 'plaintext',
-            content: code
-          });
-          await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
-        }
-      }
+      // Prefer the student's filename; fallback to a safe default
+      const filename = asString(m.filename) || `Answer_from_${name}.txt`;
+
+      // Prefer student's languageId; otherwise auto-guess; fallback to plaintext
+      const lang = asString(m.languageId) || guessLanguage(code) || 'plaintext';
+
+      // Ask host whether to open now (you can remove the prompt if you want auto-open)
+      const choice = await vscode.window.showInformationMessage(
+        `📥 Answer from ${name} • ${filename}`, 'Open'
+      );
+      if (choice !== 'Open') break;
+
+      // Open an untitled document with the given filename (so the tab shows the right name)
+      const uri = vscode.Uri.parse(`untitled:${filename}`);
+      const doc = await vscode.workspace.openTextDocument(uri); // starts empty
+      const editor = await vscode.window.showTextDocument(doc, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside
+      });
+
+      // Inject the student's code, then set language for proper syntax highlighting
+      await editor.edit(b => b.insert(new vscode.Position(0, 0), code));
+      await vscode.languages.setTextDocumentLanguage(doc, lang);
+
       break;
     }
+
 
 
     // student got feedback from host
@@ -1002,24 +1016,62 @@ const cmdCloseSession = vscode.commands.registerCommand('collab-session.closeSes
 
 // Collab Session: Send My Answer (student -> host)
 const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer', async () => {
-  // Basic guards: must be a student inside an active session
+  // Guard: must be a student inside an active session
   if (!sessionId || !nickname || myRole !== 'student') {
     void vscode.window.showWarningMessage('Join a session as student first.');
     return;
   }
+
+  // Prefer the dedicated "My answer" editor; fallback to the active editor
   const fallback = vscode.window.activeTextEditor?.document;
-  const doc = (myAnswerEditor && !myAnswerEditor.document.isClosed)
-    ? myAnswerEditor.document
-    : fallback;
+  const doc: vscode.TextDocument | undefined =
+    (myAnswerEditor && !myAnswerEditor.document.isClosed)
+      ? myAnswerEditor.document
+      : fallback;
 
-  if (!doc) { void vscode.window.showWarningMessage('Open your answer tab first.'); return; }
+  if (!doc) {
+    void vscode.window.showWarningMessage('Open your "My answer" tab first.');
+    return;
+  }
 
-  const code = doc.getText();
+  // Normalize/clean the content before sending (drop template header / code fences)
+  function cleanStudentAnswer(raw: string): string {
+    let t = raw.replace(/\r\n/g, '\n');
+    // Remove a top heading like "# My answer (HIBA)"
+    t = t.replace(/^#\s*My\s+answer.*\n+/i, '');
+    // If wrapped in triple backticks, keep only inner code
+    t = t.replace(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/m, '$1');
+    // Trim trailing blank space but keep a single newline at EOF
+    return t.trimEnd() + '\n';
+  }
+
+  const code = cleanStudentAnswer(doc.getText());
+  if (!code.trim()) {
+    void vscode.window.showWarningMessage('Answer is empty. Please write your solution before sending.');
+    return;
+  }
+
+  // Collect filename and language to improve the host UX
+  const pathMod = require('path');
+  const filename =
+    doc.uri.scheme === 'file'
+      ? pathMod.basename(doc.uri.fsPath)
+      : `answer-${nickname}.txt`;
+  const languageId = doc.languageId || undefined;
+
+  // Send to server
   await ensureSocket();
-  send({ type: 'answer', sessionId, name: nickname, code });
-  void vscode.window.showInformationMessage('Answer sent to host.');
-});
+  send({
+    type: 'answer',
+    sessionId,
+    name: nickname,
+    code,
+    filename,
+    languageId
+  });
 
+  void vscode.window.showInformationMessage('✅ Answer sent to host.');
+});
 
 
 // Collab Session: Send Feedback (host → one student)
