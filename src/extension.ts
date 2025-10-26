@@ -18,9 +18,9 @@ type MsgUsers          = { type: 'users'; sessionId: string; users: Array<{ name
 type MsgUserJoined     = { type: 'userJoined'; sessionId: string; name: string };
 type MsgUserLeft       = { type: 'userLeft'; sessionId: string; name: string };
 type MsgQuestion       = { type: 'question'; text: string };
-type MsgAnswerReceived = { type: 'answerReceived'; name: string; code: string };
 type MsgSessionClosed  = { type: 'sessionClosed' };
 type MsgError          = { type: 'error'; message?: string };
+type MsgAnswerReceived = { type: 'answerReceived'; name: string; code: string; filename?: string };
 type MsgFeedback = { type: 'feedback'; from?: string; text?: string };
 
 type ServerMessage =
@@ -290,6 +290,18 @@ function hasActiveHostSession() {
       .then(undefined, () => { /* ignore */ });
   }
 
+
+function safeAnswerFilename(doc: vscode.TextDocument, fallbackBase: string): string {
+  // If the document is saved, prefer basename of the file
+  if (doc.uri.scheme === 'file') {
+    const p = doc.fileName.replace(/\\/g, '/');
+    return p.split('/').pop() || `${fallbackBase}.txt`;
+  }
+  // If it's an untitled answer buffer, use a nice title
+  // Example: "answer-HIBA.md"
+  return `${fallbackBase}.md`;
+}
+
 // -----------------------------------------------------------------------------
 // 🧠 Dynamic Host Input
 // Ask once for the host IPv4 and save it in settings.
@@ -536,18 +548,30 @@ ws.on('message', async (raw: WebSocket.RawData) => {
     // host received an answer (host only)
     case 'answerReceived': {
       const m = msg as MsgAnswerReceived;
-      const name = s(m.name);
-      const code = s(m.code);
+      const name = asString(m.name);
+      const code = asString(m.code);
+      const filename = asString(m.filename) ?? `Answer_from_${name ?? 'student'}.txt`;
+
       if (myRole === 'host' && name && typeof code === 'string') {
         latestAnswers.set(name, code);
         answersProvider?.refresh();
-        const choice = await vscode.window.showInformationMessage(`📥 Answer from ${name}`, 'Open');
+
+        const choice = await vscode.window.showInformationMessage(
+          `📥 Answer from ${name} • ${filename}`, 'Open'
+        );
         if (choice === 'Open') {
-          vscode.commands.executeCommand('collab-session.openStudentAnswer', name);
+          // Open a tab titled with the filename (untitled so we don't touch disk)
+          const uri = vscode.Uri.parse(`untitled:${filename}`);
+          const doc = await vscode.workspace.openTextDocument({
+            language: guessLanguage(code) ?? 'plaintext',
+            content: code
+          });
+          await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
         }
       }
       break;
     }
+
 
     // student got feedback from host
     case 'feedback': {
@@ -840,44 +864,24 @@ const cmdCloseSession = vscode.commands.registerCommand('collab-session.closeSes
   myRole = undefined;
 });
 
-// Send the student's answer to the host (always prefer the dedicated "My answer" tab)
+// Collab Session: Send My Answer (student -> host)
 const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer', async () => {
   // Basic guards: must be a student inside an active session
   if (!sessionId || !nickname || myRole !== 'student') {
     void vscode.window.showWarningMessage('Join a session as student first.');
     return;
   }
+  const fallback = vscode.window.activeTextEditor?.document;
+  const doc = (myAnswerEditor && !myAnswerEditor.document.isClosed)
+    ? myAnswerEditor.document
+    : fallback;
 
-  // 1) Prefer the dedicated answer document if we have its URI
-  let doc: vscode.TextDocument | undefined;
-  if (myAnswerUri) {
-    doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === myAnswerUri!.toString());
-  }
+  if (!doc) { void vscode.window.showWarningMessage('Open your answer tab first.'); return; }
 
-  // 2) Fallback: use the active editor (only if no dedicated answer doc was found)
-  if (!doc) {
-    const ed = vscode.window.activeTextEditor;
-    if (!ed) {
-      // Friendly nudge: open the answer tab so there's no confusion
-      await openMyAnswerTab();
-      void vscode.window.showInformationMessage('Opened "My answer" tab. Write your solution there and send again.');
-      return;
-    }
-    doc = ed.document;
-  }
-
-  // 3) Read the content and validate it's not empty
-  const code = doc.getText().trim();
-  if (!code) {
-    void vscode.window.showWarningMessage('Answer is empty. Please write your solution before sending.');
-    return;
-  }
-
-  // 4) Send to server
+  const code = doc.getText();
   await ensureSocket();
   send({ type: 'answer', sessionId, name: nickname, code });
-
-  void vscode.window.showInformationMessage('✅ Answer sent to host.');
+  void vscode.window.showInformationMessage('Answer sent to host.');
 });
 
 
