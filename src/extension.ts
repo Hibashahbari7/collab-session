@@ -840,24 +840,46 @@ const cmdCloseSession = vscode.commands.registerCommand('collab-session.closeSes
   myRole = undefined;
 });
 
-// Collab Session: Send My Answer (student -> host)
+// Send the student's answer to the host (always prefer the dedicated "My answer" tab)
 const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer', async () => {
+  // Basic guards: must be a student inside an active session
   if (!sessionId || !nickname || myRole !== 'student') {
     void vscode.window.showWarningMessage('Join a session as student first.');
     return;
   }
-  const fallback = vscode.window.activeTextEditor?.document;
-  const doc = (myAnswerEditor && !myAnswerEditor.document.isClosed)
-    ? myAnswerEditor.document
-    : fallback;
 
-  if (!doc) { void vscode.window.showWarningMessage('Open your answer tab first.'); return; }
+  // 1) Prefer the dedicated answer document if we have its URI
+  let doc: vscode.TextDocument | undefined;
+  if (myAnswerUri) {
+    doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === myAnswerUri!.toString());
+  }
 
-  const code = doc.getText();
+  // 2) Fallback: use the active editor (only if no dedicated answer doc was found)
+  if (!doc) {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed) {
+      // Friendly nudge: open the answer tab so there's no confusion
+      await openMyAnswerTab();
+      void vscode.window.showInformationMessage('Opened "My answer" tab. Write your solution there and send again.');
+      return;
+    }
+    doc = ed.document;
+  }
+
+  // 3) Read the content and validate it's not empty
+  const code = doc.getText().trim();
+  if (!code) {
+    void vscode.window.showWarningMessage('Answer is empty. Please write your solution before sending.');
+    return;
+  }
+
+  // 4) Send to server
   await ensureSocket();
   send({ type: 'answer', sessionId, name: nickname, code });
-  void vscode.window.showInformationMessage('Answer sent to host.');
+
+  void vscode.window.showInformationMessage('✅ Answer sent to host.');
 });
+
 
 
 // Collab Session: Send Feedback (host → one student)
