@@ -79,8 +79,16 @@
         "title": "Collab Session: Toggle Question Sync Mode"
       },
       { "command": "collab-session.openMyAnswer",
-        "title": "Collab Session: Open My Answer" }
-
+        "title": "Collab Session: Open My Answer" 
+      },
+      {
+        "command": "collab-session.sendAnswerFromFile",
+        "title": "Collab Session: Send File as Answer (student)"
+      },
+      {
+        "command": "collab-session.loadQuestionFromFile",
+        "title": "Collab Session: Load Question From File (host)"
+      }
     ],
     "viewsContainers": {
       "activitybar": [
@@ -144,7 +152,15 @@
           "command": "collab-session.showQuestion",
           "when": "view == collabSessionUsers",
           "group": "navigation@0"
-        }
+        },
+        {
+          "command": "collab-session.sendAnswerFromFile",
+          "when": "true"
+        },
+        {
+          "command": "collab-session.loadQuestionFromFile",
+          "when": "true"
+        }        
       ],
       "editor/title": [
         {

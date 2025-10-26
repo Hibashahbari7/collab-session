@@ -225,6 +225,9 @@ function wireQuestionSyncListeners() {
 function hasActiveHostSession() {
     return myRole === 'host' && typeof sessionId === 'string' && !!sessionId.trim();
 }
+function studentAnswerUri(student) {
+    return vscode.Uri.parse(`untitled:Answer from ${student}.md`);
+}
 // ---------- tiny helpers ------------------------------------------------------
 const asString = (x) => (typeof x === 'string' ? x : undefined);
 const asUserList = (x) => Array.isArray(x) && x.every(o => typeof o?.name === 'string')
@@ -264,24 +267,21 @@ function answerUriFor(student) {
     return uri;
 }
 async function openOrUpdateAnswerTab(student, code) {
-    const uri = answerUriFor(student);
-    let doc;
-    // try find already-open doc by URI
-    doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+    const uri = studentAnswerUri(student);
+    let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
     if (!doc) {
-        // open new untitled doc with initial content
-        doc = await vscode.workspace.openTextDocument({ language: guessLanguage(code) ?? 'plaintext', content: code });
+        doc = await vscode.workspace.openTextDocument(uri);
+        const ed = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+        await ed.edit(b => b.insert(new vscode.Position(0, 0), code));
     }
     else {
-        // update existing
-        const editor = vscode.window.visibleTextEditors.find(e => e.document === doc);
-        if (editor) {
+        const ed = vscode.window.visibleTextEditors.find(e => e.document === doc);
+        if (ed) {
             const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-            await editor.edit(ed => ed.replace(full, code));
+            await ed.edit(b => b.replace(full, code));
         }
+        await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
     }
-    // show beside the question, not preview
-    await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
 }
 function goHome() {
     void vscode.commands.executeCommand('collab-session.showHome')
@@ -326,23 +326,32 @@ async function getHostIP() {
         .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
     return input;
 }
+/**
+ * Open (or focus) the dedicated "My answer (NAME)" untitled tab.
+ * Using an explicit untitled: URI sets the tab title (no "Untitled-1").
+ */
 async function openMyAnswerTab() {
-    const name = nickname ?? 'student';
-    const uri = vscode.Uri.parse(`untitled:answer-${name}.md`);
+    const name = (nickname ?? 'student').trim();
+    const uri = vscode.Uri.parse(`untitled:My answer (${name}).md`);
     myAnswerUri = uri;
-    // Try to reuse if already open
+    // Reuse if already open
     let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
     if (!doc) {
-        const template = `# My answer (${name})\n\n`;
-        doc = await vscode.workspace.openTextDocument({
-            language: 'markdown',
-            content: template
+        // Create an empty untitled doc with our URI (so title is correct)
+        doc = await vscode.workspace.openTextDocument(uri);
+        // Seed a small header once (only if empty)
+        const editor = await vscode.window.showTextDocument(doc, {
+            preview: false, viewColumn: vscode.ViewColumn.Beside
         });
+        if (doc.getText().length === 0) {
+            await editor.edit(b => b.insert(new vscode.Position(0, 0), `# My answer (${name})\n\n`));
+        }
+        myAnswerEditor = editor;
+        return;
     }
-    // Show it beside the question
+    // Already open → just focus
     myAnswerEditor = await vscode.window.showTextDocument(doc, {
-        preview: false,
-        viewColumn: vscode.ViewColumn.Beside
+        preview: false, viewColumn: vscode.ViewColumn.Beside
     });
 }
 // -----------------------------------------------------------------------------
@@ -566,6 +575,61 @@ async function ensureSocket() {
     });
     return ws;
 }
+function getQuestionTargetUri() {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (root) {
+        return vscode.Uri.joinPath(root, '.vscode', 'collab-question.md'); // real file
+    }
+    return vscode.Uri.parse('untitled:collab-question.md'); // single untitled tab
+}
+async function ensureQuestionFileExists(target, initial) {
+    if (target.scheme === 'untitled')
+        return; // nothing to create on disk
+    // ensure .vscode folder
+    try {
+        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..'));
+    }
+    catch { }
+    // create file once if missing
+    try {
+        await vscode.workspace.fs.stat(target);
+    }
+    catch {
+        await vscode.workspace.fs.writeFile(target, Buffer.from(initial, 'utf8'));
+    }
+}
+async function showOrUpdateQuestionEditor(text) {
+    try {
+        const target = getQuestionTargetUri();
+        const desired = `# Session question\n\n${text}\n`;
+        // Try to reuse an already-open doc with the same URI
+        let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === target.toString());
+        if (!doc) {
+            // Ensure file exists (workspace) or just open the untitled doc (no workspace)
+            await ensureQuestionFileExists(target, desired);
+            doc = await vscode.workspace.openTextDocument(target);
+        }
+        // Show the doc (this focuses existing tab instead of opening a new one)
+        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+        questionEditor = editor;
+        // Replace content only if different (prevents extra edits/loops)
+        if (doc.getText() !== desired) {
+            const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+            await editor.edit(ed => ed.replace(full, desired));
+            if (doc.uri.scheme !== 'untitled') {
+                try {
+                    await doc.save();
+                }
+                catch { }
+            }
+        }
+        // (Re)wire listeners according to your current mode
+        wireQuestionSyncListeners(); // uses questionEditor internally
+    }
+    catch (err) {
+        console.error('Error updating question editor', err);
+    }
+}
 // ---------- commands ----------------------------------------------------------
 const cmdOpenStudentAnswer = vscode.commands.registerCommand('collab-session.openStudentAnswer', async (arg) => {
     let student = typeof arg === 'string' ? arg :
@@ -693,6 +757,54 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
             void vscode.window.showErrorMessage(`Failed: ${String(e)}`);
         }
     });
+});
+// Student: pick a file and send its content as the answer
+const cmdSendAnswerFromFile = vscode.commands.registerCommand('collab-session.sendAnswerFromFile', async () => {
+    if (!sessionId || !nickname || myRole !== 'student') {
+        void vscode.window.showWarningMessage('Join a session as student first.');
+        return;
+    }
+    const picks = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel: 'Send this file as my answer',
+        filters: {
+            'Text-like': ['txt', 'md', 'py', 'js', 'ts', 'cpp', 'c', 'java', 'cs', 'rs', 'go', 'kt', 'swift', 'json', 'xml', 'yaml', 'yml', 'html', 'css']
+        }
+    });
+    if (!picks || picks.length === 0)
+        return;
+    const fileUri = picks[0];
+    const buf = await vscode.workspace.fs.readFile(fileUri);
+    const code = Buffer.from(buf).toString('utf8');
+    await ensureSocket();
+    send({ type: 'answer', sessionId, name: nickname, code, filename: fileUri.path.split('/').pop() });
+    void vscode.window.showInformationMessage(`✅ Answer file sent: ${fileUri.path.split('/').pop()}`);
+});
+// Host: load question text from a local file and broadcast it
+const cmdLoadQuestionFromFile = vscode.commands.registerCommand('collab-session.loadQuestionFromFile', async () => {
+    if (myRole !== 'host' || !sessionId) {
+        void vscode.window.showWarningMessage('Only host can load and broadcast a question.');
+        return;
+    }
+    const picks = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel: 'Load as question',
+        filters: {
+            'Text-like': ['txt', 'md', 'json', 'py', 'js', 'ts', 'cpp', 'c', 'java', 'cs', 'rs', 'go', 'kt', 'swift', 'html', 'css']
+        }
+    });
+    if (!picks || picks.length === 0)
+        return;
+    const fileUri = picks[0];
+    const buf = await vscode.workspace.fs.readFile(fileUri);
+    const text = Buffer.from(buf).toString('utf8');
+    // update local question editor immediately
+    latestQuestionText = text;
+    await showOrUpdateQuestionEditor(text);
+    // broadcast to students + persist in DB via server
+    await ensureSocket();
+    send({ type: 'setQuestion', text });
+    void vscode.window.showInformationMessage(`📤 Question loaded from: ${fileUri.path.split('/').pop()}`);
 });
 // Collab Session: Create Session (host)
 const cmdCreateSession = vscode.commands.registerCommand('collab-session.createSession', async () => {
@@ -822,61 +934,6 @@ const cmdSendFeedback = vscode.commands.registerCommand('collab-session.sendFeed
     send({ type: 'feedback', sessionId, to, text });
     void vscode.window.showInformationMessage(`Feedback sent to ${to}.`);
 });
-function getQuestionTargetUri() {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (root) {
-        return vscode.Uri.joinPath(root, '.vscode', 'collab-question.md'); // real file
-    }
-    return vscode.Uri.parse('untitled:collab-question.md'); // single untitled tab
-}
-async function ensureQuestionFileExists(target, initial) {
-    if (target.scheme === 'untitled')
-        return; // nothing to create on disk
-    // ensure .vscode folder
-    try {
-        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(target, '..'));
-    }
-    catch { }
-    // create file once if missing
-    try {
-        await vscode.workspace.fs.stat(target);
-    }
-    catch {
-        await vscode.workspace.fs.writeFile(target, Buffer.from(initial, 'utf8'));
-    }
-}
-async function showOrUpdateQuestionEditor(text) {
-    try {
-        const target = getQuestionTargetUri();
-        const desired = `# Session question\n\n${text}\n`;
-        // Try to reuse an already-open doc with the same URI
-        let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === target.toString());
-        if (!doc) {
-            // Ensure file exists (workspace) or just open the untitled doc (no workspace)
-            await ensureQuestionFileExists(target, desired);
-            doc = await vscode.workspace.openTextDocument(target);
-        }
-        // Show the doc (this focuses existing tab instead of opening a new one)
-        const editor = await vscode.window.showTextDocument(doc, { preview: false });
-        questionEditor = editor;
-        // Replace content only if different (prevents extra edits/loops)
-        if (doc.getText() !== desired) {
-            const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-            await editor.edit(ed => ed.replace(full, desired));
-            if (doc.uri.scheme !== 'untitled') {
-                try {
-                    await doc.save();
-                }
-                catch { }
-            }
-        }
-        // (Re)wire listeners according to your current mode
-        wireQuestionSyncListeners(); // uses questionEditor internally
-    }
-    catch (err) {
-        console.error('Error updating question editor', err);
-    }
-}
 // Collab Session: Show Question (host or student)
 const cmdShowQuestion = vscode.commands.registerCommand('collab-session.showQuestion', async () => {
     if (!sessionId) {
@@ -1026,7 +1083,7 @@ function activate(context) {
     answersProvider = new AnswersTreeProvider();
     vscode.window.registerTreeDataProvider('collabSessionAnswers', answersProvider);
     // --- core commands
-    context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion, cmdOpenMyAnswer);
+    context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion, cmdOpenMyAnswer, cmdSendAnswerFromFile, cmdLoadQuestionFromFile);
     // ---------------------------------------------------------------------------
     // ⚙️ Set Host IP (manual override stored in settings)
     // ---------------------------------------------------------------------------
