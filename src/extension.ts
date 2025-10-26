@@ -10,6 +10,7 @@
 
 import * as vscode from 'vscode';
 import WebSocket from 'ws';
+import * as path from 'path';
 
 // ---------- server message types (simple + safe) ------------------------------
 type MsgCreated        = { type: 'created'; sessionId: string };
@@ -597,8 +598,13 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       );
       if (choice !== 'Open') break;
 
-      // Open an untitled document with the given filename (so the tab shows the right name)
-      const uri = vscode.Uri.parse(`untitled:${filename}`);
+      // Create a real temp file in user's Documents/collab-session
+      const home = process.env.USERPROFILE || process.env.HOME || '';
+      const defaultDir = home ? path.join(home, 'Documents', 'collab-session') : '';
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(defaultDir));
+
+      const uri = vscode.Uri.file(path.join(defaultDir, filename));
+
       const doc = await vscode.workspace.openTextDocument(uri); // starts empty
       const editor = await vscode.window.showTextDocument(doc, {
         preview: false,

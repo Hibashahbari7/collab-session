@@ -49,6 +49,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const ws_1 = __importDefault(require("ws"));
+const path = __importStar(require("path"));
 // ---------- globals -----------------------------------------------------------
 let ws; // single socket
 let sessionId; // current session id
@@ -558,8 +559,11 @@ async function ensureSocket() {
                 const choice = await vscode.window.showInformationMessage(`📥 Answer from ${name} • ${filename}`, 'Open');
                 if (choice !== 'Open')
                     break;
-                // Open an untitled document with the given filename (so the tab shows the right name)
-                const uri = vscode.Uri.parse(`untitled:${filename}`);
+                // Create a real temp file in user's Documents/collab-session
+                const home = process.env.USERPROFILE || process.env.HOME || '';
+                const defaultDir = home ? path.join(home, 'Documents', 'collab-session') : '';
+                await vscode.workspace.fs.createDirectory(vscode.Uri.file(defaultDir));
+                const uri = vscode.Uri.file(path.join(defaultDir, filename));
                 const doc = await vscode.workspace.openTextDocument(uri); // starts empty
                 const editor = await vscode.window.showTextDocument(doc, {
                     preview: false,
