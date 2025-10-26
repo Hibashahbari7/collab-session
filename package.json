@@ -73,7 +73,12 @@
       {
         "command": "collab-session.setHostIP",
         "title": "Collab Session: Set Host IP"
+      },
+      {
+        "command": "collab-session.toggleQuestionSyncMode",
+        "title": "Collab Session: Toggle Question Sync Mode"
       }
+
     ],
     "viewsContainers": {
       "activitybar": [
@@ -104,7 +109,10 @@
         "collab.hostIP": {
           "type": "string",
           "default": "localhost",
-          "description": "Host IPv4 or WSS URL for the Collab Session server (e.g. 192.168.1.187 or wss://your-ngrok-domain)."
+          "description": "Host IPv4 or WSS URL for the Collab Session server (e.g. 192.168.1.187 or wss://your-ngrok-domain).",
+          "type": "boolean",
+          "default": true,
+          "description": "If true: send question updates only when host saves the doc (Ctrl+S). If false: send live while typing with debounce."
         }
       }
     },

@@ -63,19 +63,87 @@ const latestAnswers = new Map();
 let answersProvider; // tree view for answers
 // one stable id per VS Code install (good enough for “one client per machine” guard)
 const MACHINE_ID = vscode.env.machineId;
-// --- Question editor tracking ---
-let questionDoc;
-let questionChangeSub; // when syncing on type
-let questionSaveSub; // when syncing on save
 // choose the sync mode (true = send only on Ctrl+S, false = live while typing)
 const SYNC_ON_SAVE_ONLY = true;
 // prevent double-click create
 let isCreating = false;
-function hasActiveHostSession() {
-    return myRole === 'host' && typeof sessionId === 'string' && !!sessionId.trim();
+// --- Question editor tracking ---
+let questionDoc;
+let questionChangeSub;
+let questionSaveSub;
+let questionDebounce;
+// read current config
+function readSyncMode() {
+    return vscode.workspace.getConfiguration('collab').get('syncOnSaveOnly', true);
+}
+// this var changes at runtime when user toggles or updates settings
+let syncOnSaveOnly = readSyncMode();
+// build question file path so Ctrl+S لا يفتح Save As
+function getQuestionFileUri() {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root)
+        return undefined;
+    return vscode.Uri.joinPath(root, '.vscode', 'collab-question.md');
+}
+async function ensureQuestionDir() {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root)
+        return;
+    const dir = vscode.Uri.joinPath(root, '.vscode');
+    try {
+        await vscode.workspace.fs.createDirectory(dir);
+    }
+    catch { }
 }
 function extractQuestionFrom(doc) {
     return doc.getText().replace(/^#\s*Session question\s*/i, '').trim();
+}
+// (re)wire listeners according to current sync mode
+function wireQuestionSyncListeners() {
+    try {
+        questionChangeSub?.dispose();
+    }
+    catch { }
+    try {
+        questionSaveSub?.dispose();
+    }
+    catch { }
+    if (syncOnSaveOnly) {
+        // send only on save
+        questionSaveSub = vscode.workspace.onDidSaveTextDocument(async (saved) => {
+            if (saved !== questionEditor?.document)
+                return;
+            if (myRole !== 'host' || !sessionId)
+                return;
+            const updated = extractQuestionFrom(saved);
+            latestQuestionText = updated;
+            await ensureSocket();
+            send({ type: 'setQuestion', text: updated });
+            console.log('[Host] Sent (on save):', updated);
+            void vscode.window.showInformationMessage('Question updated & sent to students (on save).');
+        });
+    }
+    else {
+        // live with debounce
+        questionChangeSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
+            if (e.document !== questionEditor?.document)
+                return;
+            if (myRole !== 'host' || !sessionId)
+                return;
+            if (questionDebounce)
+                clearTimeout(questionDebounce);
+            questionDebounce = setTimeout(async () => {
+                const updated = extractQuestionFrom(e.document);
+                latestQuestionText = updated;
+                await ensureSocket();
+                send({ type: 'setQuestion', text: updated });
+                console.log('[Host] Sent (live, debounced):', updated);
+            }, 500);
+        });
+    }
+}
+function hasActiveHostSession() {
+    return myRole === 'host' && typeof sessionId === 'string' && !!sessionId.trim();
 }
 // ---------- tiny helpers ------------------------------------------------------
 const asString = (x) => (typeof x === 'string' ? x : undefined);
@@ -557,77 +625,46 @@ const cmdSendFeedback = vscode.commands.registerCommand('collab-session.sendFeed
     send({ type: 'feedback', sessionId, to, text });
     void vscode.window.showInformationMessage(`Feedback sent to ${to}.`);
 });
-// Open or refresh the single "Question" editor, and wire up syncing to the server.
-// - If the host edits the question, we broadcast the new text to all students.
-// - Sync mode is controlled by SYNC_ON_SAVE_ONLY:
-//     true  → send only when the host saves (Ctrl+S)
-//     false → send live while typing (on every edit)
 async function showOrUpdateQuestionEditor(text) {
     try {
-        // 1) Open the question document if it doesn't exist, otherwise update its content.
-        if (!questionEditor || questionEditor.document.isClosed) {
-            // Create a fresh untitled markdown doc with a header and the current question text
-            const doc = await vscode.workspace.openTextDocument({
-                content: `# Session question\n\n${text}\n`,
-                language: 'markdown'
-            });
-            // Show it (non-preview so it stays pinned)
-            questionEditor = await vscode.window.showTextDocument(doc, { preview: false });
-            questionDoc = doc;
+        // open/create real file so Ctrl+S works without “Save As”
+        const target = getQuestionFileUri();
+        let doc;
+        if (target) {
+            await ensureQuestionDir();
+            const initial = `# Session question\n\n${text}\n`;
+            try {
+                await vscode.workspace.fs.stat(target);
+            }
+            catch {
+                await vscode.workspace.fs.writeFile(target, Buffer.from(initial, 'utf8'));
+            }
+            doc = await vscode.workspace.openTextDocument(target);
         }
         else {
-            // Reuse the existing editor/document and replace the full content
-            const doc = questionEditor.document;
-            questionDoc = doc;
+            // fallback if no workspace
+            doc = await vscode.workspace.openTextDocument({ content: `# Session question\n\n${text}\n`, language: 'markdown' });
+        }
+        // show + adjust content if changed
+        const shown = await vscode.window.showTextDocument(doc, { preview: false });
+        questionEditor = shown;
+        questionDoc = doc;
+        const desired = `# Session question\n\n${text}\n`;
+        if (doc.getText() !== desired) {
             const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
-            await questionEditor.edit(ed => ed.replace(full, `# Session question\n\n${text}\n`));
+            await shown.edit(ed => ed.replace(full, desired));
+            // silent save for real files
+            if (doc.uri.scheme !== 'untitled') {
+                try {
+                    await doc.save();
+                }
+                catch { }
+            }
         }
-        // 2) Make sure we don't stack multiple listeners:
-        //    dispose any previous subscriptions (save/edit) before registering again.
-        try {
-            questionChangeSub?.dispose();
-        }
-        catch { }
-        try {
-            questionSaveSub?.dispose();
-        }
-        catch { }
-        // 3) Register the sync behavior according to the chosen mode
-        if (SYNC_ON_SAVE_ONLY) {
-            // A) Send only when the host saves the document (Ctrl+S)
-            questionSaveSub = vscode.workspace.onDidSaveTextDocument(async (doc) => {
-                // Guard: only react for our question doc and only for an active host session
-                if (!questionDoc || doc.uri.toString() !== questionDoc.uri.toString())
-                    return;
-                if (myRole !== 'host' || !sessionId)
-                    return;
-                // Extract the question text (drop the markdown header), cache, and send to server
-                const updated = extractQuestionFrom(doc);
-                latestQuestionText = updated;
-                await ensureSocket();
-                send({ type: 'setQuestion', text: updated });
-                // Optional UX toast for confirmation
-                void vscode.window.showInformationMessage('Question updated & sent to students.');
-            });
-        }
-        else {
-            // B) Live mode: send on every text change while the host is editing
-            questionChangeSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
-                // Guard: only react for our question doc and only for an active host session
-                if (!questionDoc || e.document.uri.toString() !== questionDoc.uri.toString())
-                    return;
-                if (myRole !== 'host' || !sessionId)
-                    return;
-                // Extract, cache, and broadcast the updated question on each edit
-                const updated = extractQuestionFrom(e.document);
-                latestQuestionText = updated;
-                await ensureSocket();
-                send({ type: 'setQuestion', text: updated });
-            });
-        }
+        // (re)wire sync listeners based on current mode
+        wireQuestionSyncListeners();
     }
     catch (err) {
-        // Be quiet in UI; just log for diagnostics
         console.error('Error updating question editor', err);
     }
 }
@@ -762,39 +799,67 @@ function getHomeHtml() {
 }
 // ---------- extension lifecycle ----------------------------------------------
 function activate(context) {
-    // users tree (only visible if contributed in package.json)
+    // --- register tree views (only show if contributed in package.json)
     treeDataProvider = new SessionTreeProvider();
     vscode.window.registerTreeDataProvider('collabSessionUsers', treeDataProvider);
-    // answers tree (only visible if contributed in package.json)
     answersProvider = new AnswersTreeProvider();
     vscode.window.registerTreeDataProvider('collabSessionAnswers', answersProvider);
-    // register commands
+    // --- core commands
     context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion);
-    // -----------------------------------------------------------------------------
-    // ⚙️ Command to manually update the Host IP if needed
-    // -----------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // ⚙️ Set Host IP (manual override stored in settings)
+    // ---------------------------------------------------------------------------
     const cmdSetHostIP = vscode.commands.registerCommand('collab-session.setHostIP', async () => {
-        // get current saved ip (or localhost as default)
+        // read current value (default to localhost)
         const current = vscode.workspace.getConfiguration().get('collab.hostIP') || 'localhost';
-        // ask the user for a new ip
+        // ask user for a new value
         const input = await vscode.window.showInputBox({
-            prompt: 'Enter new Host IPv4 (e.g. 192.168.1.187)',
+            prompt: 'Enter new Host IPv4 or ws(s) URL (e.g. 192.168.1.187 or wss://xxxx.ngrok-free.app)',
             value: current
         });
-        // user cancelled / empty => do nothing
+        // cancelled → do nothing
         if (!input)
             return;
-        // save to global settings
-        await vscode.workspace.getConfiguration()
-            .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
-        vscode.window.showInformationMessage(`✅ Host IP updated to ${input}`);
+        // persist globally
+        await vscode.workspace.getConfiguration().update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`✅ Host IP updated to: ${input}`);
     });
     context.subscriptions.push(cmdSetHostIP);
-    // --- auto open Home on activation -------------------------------------------
-    // i want the extension to show the Home webview as soon as it activates
+    // ---------------------------------------------------------------------------
+    // 🔁 Toggle Question Sync Mode (Live vs On Save)
+    // - Updates the setting collab.syncOnSaveOnly
+    // - Re-wires listeners on the open question editor (if any)
+    // ---------------------------------------------------------------------------
+    const cmdToggleSync = vscode.commands.registerCommand('collab-session.toggleQuestionSyncMode', async () => {
+        // flip in-memory flag and persist to settings
+        syncOnSaveOnly = !syncOnSaveOnly;
+        await vscode.workspace.getConfiguration('collab').update('syncOnSaveOnly', syncOnSaveOnly, vscode.ConfigurationTarget.Global);
+        // if question editor is open, re-wire listeners immediately
+        if (questionEditor && !questionEditor.document.isClosed) {
+            wireQuestionSyncListeners();
+        }
+        vscode.window.showInformationMessage(`Question sync mode: ${syncOnSaveOnly ? 'On Save (Ctrl+S)' : 'Live (debounced)'}`);
+    });
+    context.subscriptions.push(cmdToggleSync);
+    // ---------------------------------------------------------------------------
+    // 🔧 React when user changes the setting from UI (Settings)
+    // ---------------------------------------------------------------------------
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('collab.syncOnSaveOnly')) {
+            // refresh runtime flag from settings
+            syncOnSaveOnly = readSyncMode();
+            // rewire listeners if the question editor is open
+            if (questionEditor && !questionEditor.document.isClosed) {
+                wireQuestionSyncListeners();
+            }
+            vscode.window.showInformationMessage(`Question sync mode updated: ${syncOnSaveOnly ? 'On Save' : 'Live'}`);
+        }
+    }));
+    // ---------------------------------------------------------------------------
+    // 🚀 Auto-open Home on activation (nice first-run experience)
+    // ---------------------------------------------------------------------------
     void vscode.commands.executeCommand('collab-session.showHome');
-    // debug log (helps me confirm activation flow)
-    console.log('Collab Session extension activated → Home opened automatically.');
+    console.log('Collab Session activated → Home opened automatically.');
 }
 function deactivate() {
     try {
