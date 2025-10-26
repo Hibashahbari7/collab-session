@@ -74,6 +74,7 @@ let questionDoc;
 let questionChangeSub;
 let questionSaveSub;
 let questionDebounce;
+// --- student answer tab tracking ---
 let myAnswerUri;
 let myAnswerEditor;
 // ---------- status bar button (student only) ----------
@@ -162,20 +163,19 @@ function wireQuestionSyncListeners() {
     }
     else {
         // live with debounce
-        questionChangeSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
-            if (e.document !== questionEditor?.document)
+        vscode.workspace.onDidChangeTextDocument(async (e) => {
+            if (myRole !== 'student')
                 return;
-            if (myRole !== 'host' || !sessionId)
+            if (!questionEditor || e.document !== questionEditor.document)
                 return;
-            if (questionDebounce)
-                clearTimeout(questionDebounce);
-            questionDebounce = setTimeout(async () => {
-                const updated = extractQuestionFrom(e.document);
-                latestQuestionText = updated;
-                await ensureSocket();
-                send({ type: 'setQuestion', text: updated });
-                console.log('[Host] Sent (live, debounced):', updated);
-            }, 500);
+            // revert any edits instantly
+            const ed = vscode.window.visibleTextEditors.find(x => x.document === e.document);
+            if (!ed)
+                return;
+            const desired = `# Session question\n\n${latestQuestionText ?? ''}\n`;
+            const full = new vscode.Range(e.document.positionAt(0), e.document.positionAt(e.document.getText().length));
+            await ed.edit(b => b.replace(full, desired));
+            vscode.window.showWarningMessage('This tab is read-only. Please use the "My answer" tab to write.');
         });
     }
 }
@@ -273,6 +273,25 @@ async function getHostIP() {
         .update('collab.hostIP', input, vscode.ConfigurationTarget.Global);
     return input;
 }
+async function openMyAnswerTab() {
+    const name = nickname ?? 'student';
+    const uri = vscode.Uri.parse(`untitled:answer-${name}.md`);
+    myAnswerUri = uri;
+    // Try to reuse if already open
+    let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+    if (!doc) {
+        const template = `# My answer (${name})\n\n`;
+        doc = await vscode.workspace.openTextDocument({
+            language: 'markdown',
+            content: template
+        });
+    }
+    // Show it beside the question
+    myAnswerEditor = await vscode.window.showTextDocument(doc, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside
+    });
+}
 // -----------------------------------------------------------------------------
 // 🌐 Build a proper WebSocket endpoint from user-provided "host".
 // - If the user enters a full URL that starts with ws:// or wss:// → use it as-is
@@ -368,6 +387,7 @@ async function ensureSocket() {
                 latestQuestionText = typeof m.question === 'string' ? m.question : (latestQuestionText ?? '');
                 await showOrUpdateQuestionEditor(latestQuestionText);
                 await openOrFocusMyAnswer();
+                await openMyAnswerTab();
                 ensureSendAnswerStatus();
                 break;
             }

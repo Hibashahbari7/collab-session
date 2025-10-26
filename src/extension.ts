@@ -69,6 +69,7 @@ let questionChangeSub: vscode.Disposable | undefined;
 let questionSaveSub: vscode.Disposable | undefined;
 let questionDebounce: NodeJS.Timeout | undefined;
 
+// --- student answer tab tracking ---
 let myAnswerUri: vscode.Uri | undefined;
 let myAnswerEditor: vscode.TextEditor | undefined;
 
@@ -156,18 +157,17 @@ function wireQuestionSyncListeners() {
     });
   } else {
     // live with debounce
-    questionChangeSub = vscode.workspace.onDidChangeTextDocument(async (e) => {
-      if (e.document !== questionEditor?.document) return;
-      if (myRole !== 'host' || !sessionId) return;
+    vscode.workspace.onDidChangeTextDocument(async (e) => {
+      if (myRole !== 'student') return;
+      if (!questionEditor || e.document !== questionEditor.document) return;
 
-      if (questionDebounce) clearTimeout(questionDebounce);
-      questionDebounce = setTimeout(async () => {
-        const updated = extractQuestionFrom(e.document);
-        latestQuestionText = updated;
-        await ensureSocket();
-        send({ type: 'setQuestion', text: updated });
-        console.log('[Host] Sent (live, debounced):', updated);
-      }, 500);
+      // revert any edits instantly
+      const ed = vscode.window.visibleTextEditors.find(x => x.document === e.document);
+      if (!ed) return;
+      const desired = `# Session question\n\n${latestQuestionText ?? ''}\n`;
+      const full = new vscode.Range(e.document.positionAt(0), e.document.positionAt(e.document.getText().length));
+      await ed.edit(b => b.replace(full, desired));
+      vscode.window.showWarningMessage('This tab is read-only. Please use the "My answer" tab to write.');
     });
   }
 }
@@ -276,6 +276,27 @@ async function getHostIP(): Promise<string> {
 }
 
 
+async function openMyAnswerTab() {
+  const name = nickname ?? 'student';
+  const uri = vscode.Uri.parse(`untitled:answer-${name}.md`);
+  myAnswerUri = uri;
+
+  // Try to reuse if already open
+  let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+  if (!doc) {
+    const template = `# My answer (${name})\n\n`;
+    doc = await vscode.workspace.openTextDocument({
+      language: 'markdown',
+      content: template
+    });
+  }
+
+  // Show it beside the question
+  myAnswerEditor = await vscode.window.showTextDocument(doc, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.Beside
+  });
+}
 
 // -----------------------------------------------------------------------------
 // 🌐 Build a proper WebSocket endpoint from user-provided "host".
@@ -382,6 +403,7 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       latestQuestionText = typeof m.question === 'string' ? m.question : (latestQuestionText ?? '');
       await showOrUpdateQuestionEditor(latestQuestionText);
       await openOrFocusMyAnswer();
+      await openMyAnswerTab();
       ensureSendAnswerStatus();
       break;
     }
