@@ -51,6 +51,7 @@ let latestQuestionText: string | undefined;            // cached question
 const latestAnswers = new Map<string, string>();
 
 let answersProvider: AnswersTreeProvider | undefined; // tree view for answers
+let pendingInitialQuestion: string | undefined; // temp storage for the question typed before creating session
 
 // one stable id per VS Code install (good enough for “one client per machine” guard)
 const MACHINE_ID = vscode.env.machineId;
@@ -76,7 +77,7 @@ function readSyncMode(): boolean {
 // this var changes at runtime when user toggles or updates settings
 let syncOnSaveOnly = readSyncMode();
 
-// build question file path so Ctrl+S لا يفتح Save As
+// build question file path
 function getQuestionFileUri(): vscode.Uri | undefined {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (!root) return undefined;
@@ -131,6 +132,7 @@ function wireQuestionSyncListeners() {
 function hasActiveHostSession() {
   return myRole === 'host' && typeof sessionId === 'string' && !!sessionId.trim();
 }
+
 
   // ---------- tiny helpers ------------------------------------------------------
   const asString = (x: unknown) => (typeof x === 'string' ? x : undefined);
@@ -294,15 +296,25 @@ ws.on('message', async (raw: WebSocket.RawData) => {
   switch (msg.type) {
     // session was created (host)
     case 'created': {
-      const sid = s((msg as MsgCreated).sessionId);
+      const sid = asString((msg as MsgCreated).sessionId);
       if (!sid) return;
       sessionId = sid;
       await vscode.env.clipboard.writeText(sid);
       vscode.window.showInformationMessage(`🟢 Session "${sid}" created & copied to clipboard.`);
       if (!usersBySession.has(sid)) usersBySession.set(sid, new Set());
       treeDataProvider?.refresh();
-      latestQuestionText = latestQuestionText ?? '';
-      await showOrUpdateQuestionEditor(latestQuestionText);
+
+      // open the question editor immediately (even if empty)
+      await showOrUpdateQuestionEditor(latestQuestionText ?? '');
+
+      // if the user clicked "Set question" before creating, push that text now
+      if (pendingInitialQuestion && pendingInitialQuestion.length > 0) {
+        latestQuestionText = pendingInitialQuestion;
+        await showOrUpdateQuestionEditor(pendingInitialQuestion); // reflect locally
+        await ensureSocket();
+        send({ type: 'setQuestion', text: pendingInitialQuestion }); // broadcast + DB
+      }
+      pendingInitialQuestion = undefined; // clear temp
       break;
     }
 
@@ -370,10 +382,18 @@ ws.on('message', async (raw: WebSocket.RawData) => {
     // question changed
     case 'question': {
       const m = msg as MsgQuestion;
-      latestQuestionText = s(m.text) ?? '';
-      await showOrUpdateQuestionEditor(latestQuestionText);
+      const incoming = asString(m.text) ?? '';
+
+      if (myRole === 'host' && questionEditor && !questionEditor.document.isClosed) {
+        latestQuestionText = incoming;
+        break;
+      }
+
+      latestQuestionText = incoming;
+      await showOrUpdateQuestionEditor(incoming);
       break;
     }
+
 
     // host closed session
     case 'sessionClosed': {
@@ -502,24 +522,30 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
     try {
       // -------------------- Create (Host) --------------------
       if (m?.cmd === 'create') {
-        // don't allow creating while a host session is already active
+        // prevent creating another session if one is already active
         if (hasActiveHostSession()) {
           void vscode.window.showWarningMessage(
             `A session is already active (ID: ${sessionId}). Close it first (Collab Session: Close Session).`
           );
           return;
         }
-        if (isCreating) return; // debounce double click
+        if (isCreating) return; // avoid double-click spam
         isCreating = true;
 
         myRole = 'host';
         await ensureSocket();
         const sid = randomId();
+
+        // store the initial question text typed in the Home view (if any)
+        pendingInitialQuestion = typeof m.initialQuestion === 'string' ? m.initialQuestion.trim() : '';
+
+        // send create request to server
         send({ type: 'create', sessionId: sid, machineId: MACHINE_ID });
 
-        // small debounce window
+        // small debounce window to prevent double create
         setTimeout(() => (isCreating = false), 500);
       }
+
 
       // -------------------- Join (Student) --------------------
       else if (m?.cmd === 'join') {
@@ -554,20 +580,47 @@ const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', a
 
       // -------------------- Set Question (Host) --------------------
       else if (m?.cmd === 'setQuestion') {
-        if (!hasActiveHostSession()) {
-          void vscode.window.showWarningMessage('Only host with an active session can set question.');
+        // normalize the text coming from Home input
+        const text = String(m.text ?? '').trim();
+        if (!text) {
+          void vscode.window.showWarningMessage('Type a question first.');
           return;
         }
+
+        // ------------------------------------------------------------
+        // Case A: no active host session → auto-create, then apply question
+        // ------------------------------------------------------------
+        if (!hasActiveHostSession()) {
+          // avoid double-click race
+          if (isCreating) return;
+          isCreating = true;
+
+          // become host and connect
+          myRole = 'host';
+          await ensureSocket();
+
+          // stash the text so the 'created' handler will push it to the editor + server
+          pendingInitialQuestion = text;
+
+          // create a brand new session; 'case created' will open the editor and send pendingInitialQuestion
+          const sid = randomId();
+          send({ type: 'create', sessionId: sid, machineId: MACHINE_ID });
+
+          // small debounce window
+          setTimeout(() => (isCreating = false), 500);
+          return; // we're done; the created handler will finish the flow
+        }
+
+        // ------------------------------------------------------------
+        // Case B: already hosting an active session → update immediately
+        // ------------------------------------------------------------
+        latestQuestionText = text;                      // cache locally
+        await showOrUpdateQuestionEditor(text);         // update/open the question editor right away
         await ensureSocket();
-        const text = String(m.text || '');
-        latestQuestionText = text;
-
-        // send to server
-        send({ type: 'setQuestion', text });
-
-        // update local editor immediately (don’t wait for echo)
-        await showOrUpdateQuestionEditor(text);
+        send({ type: 'setQuestion', text });            // broadcast to students + store in DB
       }
+
+
     } catch (e) {
       // reset guards on error
       isJoining = false;
@@ -893,11 +946,23 @@ function getHomeHtml(): string {
     const vscode = acquireVsCodeApi();
     const q = (id) => document.getElementById(id);
 
-    q('btnCreate').onclick = () => vscode.postMessage({ cmd:'create' });
-    q('btnSetQ').onclick   = () => vscode.postMessage({ cmd:'setQuestion', text: q('question').value });
-    q('btnJoin').onclick   = () =>
+    // when lecturer clicks "Create session" → also send any question typed in the input
+    q('btnCreate').onclick = () => {
+      const initialQ = q('question').value || '';
+      vscode.postMessage({ cmd:'create', initialQuestion: initialQ });
+    };
+
+    // when lecturer manually clicks "Set question"
+    q('btnSetQ').onclick = () => {
+      vscode.postMessage({ cmd:'setQuestion', text: q('question').value });
+    };
+
+    // when student clicks "Join"
+    q('btnJoin').onclick = () => {
       vscode.postMessage({ cmd:'join', sessionId: q('sid').value, name: q('nick').value });
+    };
   </script>
+
 </body>
 </html>`;
 }
