@@ -143,15 +143,30 @@ function answerUriForMe() {
     return vscode.Uri.parse(`untitled:answer-${nickname ?? 'student'}.md`);
 }
 async function openOrFocusMyAnswer() {
-    const uri = answerUriForMe();
+    // build a safe path for the student's answer file
+    const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || // workspace folder (if opened)
+        process.env.USERPROFILE || // Windows user folder
+        process.env.HOME; // Linux/macOS fallback
+    const safeFileName = `My answer (${nickname ?? 'student'}).md`;
+    const filePath = require('path').join(baseDir, safeFileName);
+    const uri = vscode.Uri.file(filePath);
     myAnswerUri = uri;
-    // try reuse
+    // try reuse (if already open)
     let doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
     if (!doc) {
         const template = `# My answer (${nickname ?? 'student'})\n\n`;
-        doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: template });
+        doc = await vscode.workspace.openTextDocument({
+            language: 'markdown',
+            content: template
+        });
+        // save to the safe path immediately so we have a real file on disk
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(template, 'utf8'));
     }
-    myAnswerEditor = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+    // show editor (not preview)
+    myAnswerEditor = await vscode.window.showTextDocument(doc, {
+        preview: false,
+        viewColumn: vscode.ViewColumn.Beside
+    });
 }
 // read current config
 function readSyncMode() {
