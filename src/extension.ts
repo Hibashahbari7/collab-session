@@ -81,6 +81,36 @@ let warnedReadOnlyOnce = false;   // show warning once per session
 
 // ---------- status bar button (student only) ----------
 let sendAnswerStatus: vscode.StatusBarItem | undefined;
+// status bar buttons shown for student during an active session
+let sbOpenAnswer: vscode.StatusBarItem | undefined;
+let sbSendAnswer: vscode.StatusBarItem | undefined;
+
+function ensureStudentStatusBar() {
+  // create once
+  if (!sbOpenAnswer) {
+    sbOpenAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    sbOpenAnswer.text = '$(notebook-new-cell) My Answer';
+    sbOpenAnswer.tooltip = 'Open your "My answer" tab';
+    sbOpenAnswer.command = 'collab-session.openMyAnswer';
+  }
+  if (!sbSendAnswer) {
+    sbSendAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+    sbSendAnswer.text = '$(cloud-upload) Send Answer';
+    sbSendAnswer.tooltip = 'Send your current answer to the host';
+    sbSendAnswer.command = 'collab-session.sendAnswer';
+  }
+
+  // show/hide based on role+session
+  const shouldShow = (myRole === 'student' && !!sessionId);
+  if (shouldShow) {
+    sbOpenAnswer!.show();
+    sbSendAnswer!.show();
+  } else {
+    sbOpenAnswer!.hide();
+    sbSendAnswer!.hide();
+  }
+}
+
 
 function ensureSendAnswerStatus() {
   if (!sendAnswerStatus) {
@@ -494,6 +524,7 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       if (myRole === 'student') {
         enableStudentReadOnlyGuard();
         await openMyAnswerTab();
+        ensureStudentStatusBar(); // ✅ show buttons on join
       }
       break;
     }
@@ -563,6 +594,7 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       if (sendAnswerStatus) sendAnswerStatus.hide();
       goHome();
       try { blockQuestionEditsSub?.dispose(); } catch {}
+      ensureStudentStatusBar(); // ✅ hide buttons when host closes session
       break;
     }
 
@@ -1001,6 +1033,7 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
   treeDataProvider?.refresh();
   void vscode.window.showInformationMessage('You left the session.');
   if (sendAnswerStatus) sendAnswerStatus.hide();
+  ensureStudentStatusBar(); // ✅ hide buttons when student leaves
   goHome();
 });
 
@@ -1361,6 +1394,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {
+  ensureStudentStatusBar(); // ✅ hide buttons on deactivate
   try { blockQuestionEditsSub?.dispose(); } catch {}
   try { ws?.close(); } catch {}
 }
