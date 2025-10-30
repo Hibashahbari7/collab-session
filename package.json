@@ -88,7 +88,20 @@
       {
         "command": "collab-session.loadQuestionFromFile",
         "title": "Collab Session: Load Question From File (host)"
+      },
+      {
+        "command": "collab-session.openMyAnswer",
+        "title": "Collab Session: Open My Answer"
+      },
+      {
+        "command": "collab-session.sendAnswer",
+        "title": "Collab Session: Send My Answer"
+      },
+      {
+        "command": "collab-session.exportMyAnswer",
+        "title": "Collab Session: Export My Answer…"
       }
+
     ],
     "viewsContainers": {
       "activitybar": [
@@ -160,7 +173,22 @@
         {
           "command": "collab-session.loadQuestionFromFile",
           "when": "true"
-        }        
+        },
+        {
+          "command": "collab-session.openMyAnswer",
+          "when": "collab.isStudentInSession",
+          "group": "navigation@0"
+        },
+        {
+          "command": "collab-session.sendAnswer",
+          "when": "collab.isStudentInSession && collab.isAnswerDoc",
+          "group": "navigation@1"
+        },
+        {
+          "command": "collab-session.exportMyAnswer",
+          "when": "collab.isStudentInSession && collab.isAnswerDoc",
+          "group": "navigation@2"
+        }
       ],
       "editor/title": [
         {

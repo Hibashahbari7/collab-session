@@ -81,12 +81,13 @@ let warnedReadOnlyOnce = false;   // show warning once per session
 
 // ---------- status bar button (student only) ----------
 let sendAnswerStatus: vscode.StatusBarItem | undefined;
-// status bar buttons shown for student during an active session
+
 let sbOpenAnswer: vscode.StatusBarItem | undefined;
 let sbSendAnswer: vscode.StatusBarItem | undefined;
 
 function ensureStudentStatusBar() {
-  // create once
+  const inSession = (myRole === 'student' && !!sessionId);
+
   if (!sbOpenAnswer) {
     sbOpenAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
     sbOpenAnswer.text = '$(notebook-new-cell) My Answer';
@@ -100,17 +101,9 @@ function ensureStudentStatusBar() {
     sbSendAnswer.command = 'collab-session.sendAnswer';
   }
 
-  // show/hide based on role+session
-  const shouldShow = (myRole === 'student' && !!sessionId);
-  if (shouldShow) {
-    sbOpenAnswer!.show();
-    sbSendAnswer!.show();
-  } else {
-    sbOpenAnswer!.hide();
-    sbSendAnswer!.hide();
-  }
+  if (inSession) { sbOpenAnswer.show(); sbSendAnswer.show(); }
+  else { sbOpenAnswer.hide(); sbSendAnswer.hide(); }
 }
-
 
 function ensureSendAnswerStatus() {
   if (!sendAnswerStatus) {
@@ -524,7 +517,10 @@ ws.on('message', async (raw: WebSocket.RawData) => {
       if (myRole === 'student') {
         enableStudentReadOnlyGuard();
         await openMyAnswerTab();
-        ensureStudentStatusBar(); // ✅ show buttons on join
+        await setUiContext('collab.isStudentInSession', true);
+        updateAnswerDocContext();
+        ensureStudentStatusBar();
+
       }
       break;
     }
@@ -586,17 +582,41 @@ ws.on('message', async (raw: WebSocket.RawData) => {
 
     // host closed session
     case 'sessionClosed': {
+      // 1) drop runtime state (so next session starts clean)
       sessionId = undefined;
-      nickname = undefined;
+      nickname  = undefined;
+      myRole    = undefined;
+      latestQuestionText = undefined;
+
+      // keep trees in sync
       usersBySession.clear();
+      latestAnswers.clear();
       treeDataProvider?.refresh();
-      vscode.window.showWarningMessage('🔴 Session closed by host');
+      answersProvider?.refresh();
+
+      // 2) stop any listeners/guards tied to the session
+      try { blockQuestionEditsSub?.dispose(); blockQuestionEditsSub = undefined; } catch {}
+      try { questionChangeSub?.dispose();   questionChangeSub   = undefined; } catch {}
+      try { questionSaveSub?.dispose();     questionSaveSub     = undefined; } catch {}
+
+      // forget editors we were tracking
+      myAnswerEditor  = undefined;
+      questionEditor  = undefined;
+      questionDoc     = undefined;
+
+      // 3) update UI contexts + status bar
+      //    (await is OK here because the ws message handler is async)
+      await setUiContext('collab.isStudentInSession', false);
+      await setUiContext('collab.isAnswerDoc',       false);
+      ensureStudentStatusBar();                  // refresh the “Send My Answer” button visibility
       if (sendAnswerStatus) sendAnswerStatus.hide();
+
+      // 4) notify and navigate home
+      vscode.window.showWarningMessage('🔴 Session closed by host');
       goHome();
-      try { blockQuestionEditsSub?.dispose(); } catch {}
-      ensureStudentStatusBar(); // ✅ hide buttons when host closes session
       break;
     }
+
 
     // server error
     case 'error': {
@@ -607,49 +627,28 @@ ws.on('message', async (raw: WebSocket.RawData) => {
 
     // host received an answer (host only)
     case 'answerReceived': {
-      // Accept optional filename/languageId sent by the student
       const m = msg as MsgAnswerReceived & { filename?: string; languageId?: string };
-
       const name = asString(m.name);
       const code = asString(m.code);
       if (myRole !== 'host' || !name || typeof code !== 'string') break;
 
-      // Persist latest answer and refresh the tree
       latestAnswers.set(name, code);
       answersProvider?.refresh();
 
-      // Prefer the student's filename; fallback to a safe default
       const filename = asString(m.filename) || `Answer_from_${name}.txt`;
+      const lang     = asString(m.languageId) || guessLanguage(code) || 'plaintext';
 
-      // Prefer student's languageId; otherwise auto-guess; fallback to plaintext
-      const lang = asString(m.languageId) || guessLanguage(code) || 'plaintext';
-
-      // Ask host whether to open now (you can remove the prompt if you want auto-open)
-      const choice = await vscode.window.showInformationMessage(
-        `📥 Answer from ${name} • ${filename}`, 'Open'
-      );
+      // ask to open now (optional)
+      const choice = await vscode.window.showInformationMessage(`📥 Answer from ${name} • ${filename}`, 'Open');
       if (choice !== 'Open') break;
 
-      // Create a real temp file in user's Documents/collab-session
-      const home = process.env.USERPROFILE || process.env.HOME || '';
-      const defaultDir = home ? path.join(home, 'Documents', 'collab-session') : '';
-      await vscode.workspace.fs.createDirectory(vscode.Uri.file(defaultDir));
-
-      const uri = vscode.Uri.file(path.join(defaultDir, filename));
-
-      const doc = await vscode.workspace.openTextDocument(uri); // starts empty
-      const editor = await vscode.window.showTextDocument(doc, {
-        preview: false,
-        viewColumn: vscode.ViewColumn.Beside
-      });
-
-      // Inject the student's code, then set language for proper syntax highlighting
-      await editor.edit(b => b.insert(new vscode.Position(0, 0), code));
+      const uri = vscode.Uri.parse(`untitled:${filename}`);
+      const doc = await vscode.workspace.openTextDocument(uri);
+      const ed  = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+      await ed.edit(b => b.insert(new vscode.Position(0, 0), code));
       await vscode.languages.setTextDocumentLanguage(doc, lang);
-
       break;
     }
-
 
 
     // student got feedback from host
@@ -738,11 +737,29 @@ async function showOrUpdateQuestionEditor(text: string) {
   }
 }
 
+async function setUiContext(key: string, value: any) {
+  await vscode.commands.executeCommand('setContext', key, value);
+}
+
+// true iff current active editor is the student's answer document
+function updateAnswerDocContext() {
+  const active = vscode.window.activeTextEditor?.document?.uri.toString();
+  const mine   = myAnswerEditor?.document?.uri.toString();
+  void setUiContext('collab.isAnswerDoc', !!active && !!mine && active === mine);
+}
+
+// call on editor changes
+vscode.window.onDidChangeActiveTextEditor(() => updateAnswerDocContext());
+vscode.workspace.onDidOpenTextDocument(() => updateAnswerDocContext());
+vscode.workspace.onDidCloseTextDocument(() => updateAnswerDocContext());
+
+
 // ---------- commands ----------------------------------------------------------
 
 const cmdOpenStudentAnswer = vscode.commands.registerCommand(
   'collab-session.openStudentAnswer',
   async (arg?: { student?: string } | string) => {
+    // pick student
     let student =
       typeof arg === 'string' ? arg :
       typeof arg?.student === 'string' ? arg.student : undefined;
@@ -754,8 +771,8 @@ const cmdOpenStudentAnswer = vscode.commands.registerCommand(
         return;
       }
       student = await vscode.window.showQuickPick(names, { placeHolder: 'Select a student' });
+      if (!student) return;
     }
-    if (!student) return;
 
     const code = latestAnswers.get(student);
     if (typeof code !== 'string') {
@@ -763,19 +780,17 @@ const cmdOpenStudentAnswer = vscode.commands.registerCommand(
       return;
     }
 
-    const doc = await vscode.workspace.openTextDocument({
-      language: guessLanguage(code) ?? 'plaintext',
-      content: code
-    });
-    await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+    // decide the target column: “next to” the question tab if present
+    const baseCol = questionEditor?.viewColumn ?? vscode.ViewColumn.Active;
+    const targetCol = vscode.ViewColumn.Beside;
 
-    try {
-      await vscode.workspace.fs.rename(
-        doc.uri,
-        doc.uri.with({ path: `/Answer_from_${student}.txt` }),
-        { overwrite: true }
-      );
-    } catch { /* ignore */ }
+    // open an untitled doc named after student; inject content; set language
+    const guessLang = guessLanguage(code) ?? 'plaintext';
+    const uri = vscode.Uri.parse(`untitled:Answer_from_${student}.txt`);
+    const doc = await vscode.workspace.openTextDocument(uri); // start empty
+    const ed = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: targetCol });
+    await ed.edit(b => b.insert(new vscode.Position(0, 0), code));
+    await vscode.languages.setTextDocumentLanguage(doc, guessLang);
   }
 );
 
@@ -1012,10 +1027,16 @@ const cmdCopySessionId = vscode.commands.registerCommand('collab-session.copySes
   void vscode.window.showInformationMessage(`Copied: ${sessionId}`);
 });
 
-const cmdOpenMyAnswer = vscode.commands.registerCommand(
-  'collab-session.openMyAnswer',
-  openOrFocusMyAnswer
-);
+
+// Collab Session: Open My Answer (student)
+const cmdOpenMyAnswer = vscode.commands.registerCommand('collab-session.openMyAnswer', async () => {
+  if (myRole !== 'student') {
+    void vscode.window.showWarningMessage('This action is for students.');
+    return;
+  }
+  await openMyAnswerTab();     // your existing helper
+  updateAnswerDocContext();    // keep context in sync so buttons show
+});
 
 
 // Collab Session: Leave Session (student)
@@ -1033,7 +1054,9 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
   treeDataProvider?.refresh();
   void vscode.window.showInformationMessage('You left the session.');
   if (sendAnswerStatus) sendAnswerStatus.hide();
-  ensureStudentStatusBar(); // ✅ hide buttons when student leaves
+  await setUiContext('collab.isStudentInSession', false);
+  await setUiContext('collab.isAnswerDoc', false);
+  ensureStudentStatusBar(); // hides
   goHome();
 });
 
@@ -1055,42 +1078,29 @@ const cmdCloseSession = vscode.commands.registerCommand('collab-session.closeSes
 
 // Collab Session: Send My Answer (student -> host)
 const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer', async () => {
-  // Guard: must be a student inside an active session
   if (!sessionId || !nickname || myRole !== 'student') {
     void vscode.window.showWarningMessage('Join a session as student first.');
     return;
   }
 
-  // Prefer the dedicated "My answer" editor; fallback to the active editor
   const fallback = vscode.window.activeTextEditor?.document;
   const doc: vscode.TextDocument | undefined =
     (myAnswerEditor && !myAnswerEditor.document.isClosed)
       ? myAnswerEditor.document
       : fallback;
 
-  if (!doc) {
-    void vscode.window.showWarningMessage('Open your "My answer" tab first.');
-    return;
-  }
+  if (!doc) { void vscode.window.showWarningMessage('Open your "My answer" tab first.'); return; }
 
-  // Normalize/clean the content before sending (drop template header / code fences)
   function cleanStudentAnswer(raw: string): string {
     let t = raw.replace(/\r\n/g, '\n');
-    // Remove a top heading like "# My answer (HIBA)"
-    t = t.replace(/^#\s*My\s+answer.*\n+/i, '');
-    // If wrapped in triple backticks, keep only inner code
-    t = t.replace(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/m, '$1');
-    // Trim trailing blank space but keep a single newline at EOF
+    t = t.replace(/^#\s*My\s+answer.*\n+/i, '');                  // drop template header
+    t = t.replace(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/m, '$1'); // unwrap fences
     return t.trimEnd() + '\n';
   }
 
   const code = cleanStudentAnswer(doc.getText());
-  if (!code.trim()) {
-    void vscode.window.showWarningMessage('Answer is empty. Please write your solution before sending.');
-    return;
-  }
+  if (!code.trim()) { void vscode.window.showWarningMessage('Answer is empty.'); return; }
 
-  // Collect filename and language to improve the host UX
   const pathMod = require('path');
   const filename =
     doc.uri.scheme === 'file'
@@ -1098,17 +1108,8 @@ const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer
       : `answer-${nickname}.txt`;
   const languageId = doc.languageId || undefined;
 
-  // Send to server
   await ensureSocket();
-  send({
-    type: 'answer',
-    sessionId,
-    name: nickname,
-    code,
-    filename,
-    languageId
-  });
-
+  send({ type: 'answer', sessionId, name: nickname, code, filename, languageId });
   void vscode.window.showInformationMessage('✅ Answer sent to host.');
 });
 
@@ -1321,7 +1322,8 @@ export function activate(context: vscode.ExtensionContext) {
     cmdShowQuestion,
     cmdOpenMyAnswer,
     cmdSendAnswerFromFile,
-    cmdLoadQuestionFromFile
+    cmdLoadQuestionFromFile,
+    cmdOpenMyAnswer
   );
 
   // ---------------------------------------------------------------------------
@@ -1393,8 +1395,13 @@ export function activate(context: vscode.ExtensionContext) {
   console.log('Collab Session activated → Home opened automatically.');
 }
 
-export function deactivate() {
-  ensureStudentStatusBar(); // ✅ hide buttons on deactivate
+export async function deactivate() {
+  try {
+    await setUiContext('collab.isStudentInSession', false);
+    await setUiContext('collab.isAnswerDoc', false);
+  } catch {}
+
+  try { ensureStudentStatusBar(); } catch {}
   try { blockQuestionEditsSub?.dispose(); } catch {}
   try { ws?.close(); } catch {}
 }

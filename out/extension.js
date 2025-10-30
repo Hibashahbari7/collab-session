@@ -83,34 +83,6 @@ let suppressRevertLoop = false; // prevents infinite onDidChangeTextDocument loo
 let warnedReadOnlyOnce = false; // show warning once per session
 // ---------- status bar button (student only) ----------
 let sendAnswerStatus;
-// status bar buttons shown for student during an active session
-let sbOpenAnswer;
-let sbSendAnswer;
-function ensureStudentStatusBar() {
-    // create once
-    if (!sbOpenAnswer) {
-        sbOpenAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-        sbOpenAnswer.text = '$(notebook-new-cell) My Answer';
-        sbOpenAnswer.tooltip = 'Open your "My answer" tab';
-        sbOpenAnswer.command = 'collab-session.openMyAnswer';
-    }
-    if (!sbSendAnswer) {
-        sbSendAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
-        sbSendAnswer.text = '$(cloud-upload) Send Answer';
-        sbSendAnswer.tooltip = 'Send your current answer to the host';
-        sbSendAnswer.command = 'collab-session.sendAnswer';
-    }
-    // show/hide based on role+session
-    const shouldShow = (myRole === 'student' && !!sessionId);
-    if (shouldShow) {
-        sbOpenAnswer.show();
-        sbSendAnswer.show();
-    }
-    else {
-        sbOpenAnswer.hide();
-        sbSendAnswer.hide();
-    }
-}
 function ensureSendAnswerStatus() {
     if (!sendAnswerStatus) {
         sendAnswerStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
@@ -496,7 +468,6 @@ async function ensureSocket() {
                 if (myRole === 'student') {
                     enableStudentReadOnlyGuard();
                     await openMyAnswerTab();
-                    ensureStudentStatusBar(); // ✅ show buttons on join
                 }
                 break;
             }
@@ -561,7 +532,6 @@ async function ensureSocket() {
                     blockQuestionEditsSub?.dispose();
                 }
                 catch { }
-                ensureStudentStatusBar(); // ✅ hide buttons when host closes session
                 break;
             }
             // server error
@@ -927,7 +897,6 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
     void vscode.window.showInformationMessage('You left the session.');
     if (sendAnswerStatus)
         sendAnswerStatus.hide();
-    ensureStudentStatusBar(); // ✅ hide buttons when student leaves
     goHome();
 });
 // Collab Session: Close Session (host)
@@ -1228,7 +1197,6 @@ function activate(context) {
     console.log('Collab Session activated → Home opened automatically.');
 }
 function deactivate() {
-    ensureStudentStatusBar(); // ✅ hide buttons on deactivate
     try {
         blockQuestionEditsSub?.dispose();
     }
