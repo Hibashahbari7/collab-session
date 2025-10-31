@@ -49,7 +49,6 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const ws_1 = __importDefault(require("ws"));
-const path = __importStar(require("path"));
 // ---------- globals -----------------------------------------------------------
 let ws; // single socket
 let sessionId; // current session id
@@ -83,6 +82,31 @@ let suppressRevertLoop = false; // prevents infinite onDidChangeTextDocument loo
 let warnedReadOnlyOnce = false; // show warning once per session
 // ---------- status bar button (student only) ----------
 let sendAnswerStatus;
+let sbOpenAnswer;
+let sbSendAnswer;
+function ensureStudentStatusBar() {
+    const inSession = (myRole === 'student' && !!sessionId);
+    if (!sbOpenAnswer) {
+        sbOpenAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+        sbOpenAnswer.text = '$(notebook-new-cell) My Answer';
+        sbOpenAnswer.tooltip = 'Open your "My answer" tab';
+        sbOpenAnswer.command = 'collab-session.openMyAnswer';
+    }
+    if (!sbSendAnswer) {
+        sbSendAnswer = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+        sbSendAnswer.text = '$(cloud-upload) Send Answer';
+        sbSendAnswer.tooltip = 'Send your current answer to the host';
+        sbSendAnswer.command = 'collab-session.sendAnswer';
+    }
+    if (inSession) {
+        sbOpenAnswer.show();
+        sbSendAnswer.show();
+    }
+    else {
+        sbOpenAnswer.hide();
+        sbSendAnswer.hide();
+    }
+}
 function ensureSendAnswerStatus() {
     if (!sendAnswerStatus) {
         sendAnswerStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
@@ -468,6 +492,9 @@ async function ensureSocket() {
                 if (myRole === 'student') {
                     enableStudentReadOnlyGuard();
                     await openMyAnswerTab();
+                    await setUiContext('collab.isStudentInSession', true);
+                    updateAnswerDocContext();
+                    ensureStudentStatusBar();
                 }
                 break;
             }
@@ -520,18 +547,46 @@ async function ensureSocket() {
             }
             // host closed session
             case 'sessionClosed': {
+                // 1) drop runtime state (so next session starts clean)
                 sessionId = undefined;
                 nickname = undefined;
+                myRole = undefined;
+                latestQuestionText = undefined;
+                // keep trees in sync
                 usersBySession.clear();
+                latestAnswers.clear();
                 treeDataProvider?.refresh();
-                vscode.window.showWarningMessage('🔴 Session closed by host');
-                if (sendAnswerStatus)
-                    sendAnswerStatus.hide();
-                goHome();
+                answersProvider?.refresh();
+                // 2) stop any listeners/guards tied to the session
                 try {
                     blockQuestionEditsSub?.dispose();
+                    blockQuestionEditsSub = undefined;
                 }
                 catch { }
+                try {
+                    questionChangeSub?.dispose();
+                    questionChangeSub = undefined;
+                }
+                catch { }
+                try {
+                    questionSaveSub?.dispose();
+                    questionSaveSub = undefined;
+                }
+                catch { }
+                // forget editors we were tracking
+                myAnswerEditor = undefined;
+                questionEditor = undefined;
+                questionDoc = undefined;
+                // 3) update UI contexts + status bar
+                //    (await is OK here because the ws message handler is async)
+                await setUiContext('collab.isStudentInSession', false);
+                await setUiContext('collab.isAnswerDoc', false);
+                ensureStudentStatusBar(); // refresh the “Send My Answer” button visibility
+                if (sendAnswerStatus)
+                    sendAnswerStatus.hide();
+                // 4) notify and navigate home
+                vscode.window.showWarningMessage('🔴 Session closed by host');
+                goHome();
                 break;
             }
             // server error
@@ -542,35 +597,23 @@ async function ensureSocket() {
             }
             // host received an answer (host only)
             case 'answerReceived': {
-                // Accept optional filename/languageId sent by the student
                 const m = msg;
                 const name = asString(m.name);
                 const code = asString(m.code);
                 if (myRole !== 'host' || !name || typeof code !== 'string')
                     break;
-                // Persist latest answer and refresh the tree
                 latestAnswers.set(name, code);
                 answersProvider?.refresh();
-                // Prefer the student's filename; fallback to a safe default
                 const filename = asString(m.filename) || `Answer_from_${name}.txt`;
-                // Prefer student's languageId; otherwise auto-guess; fallback to plaintext
                 const lang = asString(m.languageId) || guessLanguage(code) || 'plaintext';
-                // Ask host whether to open now (you can remove the prompt if you want auto-open)
+                // ask to open now (optional)
                 const choice = await vscode.window.showInformationMessage(`📥 Answer from ${name} • ${filename}`, 'Open');
                 if (choice !== 'Open')
                     break;
-                // Create a real temp file in user's Documents/collab-session
-                const home = process.env.USERPROFILE || process.env.HOME || '';
-                const defaultDir = home ? path.join(home, 'Documents', 'collab-session') : '';
-                await vscode.workspace.fs.createDirectory(vscode.Uri.file(defaultDir));
-                const uri = vscode.Uri.file(path.join(defaultDir, filename));
-                const doc = await vscode.workspace.openTextDocument(uri); // starts empty
-                const editor = await vscode.window.showTextDocument(doc, {
-                    preview: false,
-                    viewColumn: vscode.ViewColumn.Beside
-                });
-                // Inject the student's code, then set language for proper syntax highlighting
-                await editor.edit(b => b.insert(new vscode.Position(0, 0), code));
+                const uri = vscode.Uri.parse(`untitled:${filename}`);
+                const doc = await vscode.workspace.openTextDocument(uri);
+                const ed = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
+                await ed.edit(b => b.insert(new vscode.Position(0, 0), code));
                 await vscode.languages.setTextDocumentLanguage(doc, lang);
                 break;
             }
@@ -658,8 +701,22 @@ async function showOrUpdateQuestionEditor(text) {
         console.error('Error updating question editor', err);
     }
 }
+async function setUiContext(key, value) {
+    await vscode.commands.executeCommand('setContext', key, value);
+}
+// true iff current active editor is the student's answer document
+function updateAnswerDocContext() {
+    const active = vscode.window.activeTextEditor?.document?.uri.toString();
+    const mine = myAnswerEditor?.document?.uri.toString();
+    void setUiContext('collab.isAnswerDoc', !!active && !!mine && active === mine);
+}
+// call on editor changes
+vscode.window.onDidChangeActiveTextEditor(() => updateAnswerDocContext());
+vscode.workspace.onDidOpenTextDocument(() => updateAnswerDocContext());
+vscode.workspace.onDidCloseTextDocument(() => updateAnswerDocContext());
 // ---------- commands ----------------------------------------------------------
 const cmdOpenStudentAnswer = vscode.commands.registerCommand('collab-session.openStudentAnswer', async (arg) => {
+    // pick student
     let student = typeof arg === 'string' ? arg :
         typeof arg?.student === 'string' ? arg.student : undefined;
     if (!student) {
@@ -669,23 +726,24 @@ const cmdOpenStudentAnswer = vscode.commands.registerCommand('collab-session.ope
             return;
         }
         student = await vscode.window.showQuickPick(names, { placeHolder: 'Select a student' });
+        if (!student)
+            return;
     }
-    if (!student)
-        return;
     const code = latestAnswers.get(student);
     if (typeof code !== 'string') {
         void vscode.window.showWarningMessage(`${student} has not submitted an answer yet.`);
         return;
     }
-    const doc = await vscode.workspace.openTextDocument({
-        language: guessLanguage(code) ?? 'plaintext',
-        content: code
-    });
-    await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
-    try {
-        await vscode.workspace.fs.rename(doc.uri, doc.uri.with({ path: `/Answer_from_${student}.txt` }), { overwrite: true });
-    }
-    catch { /* ignore */ }
+    // decide the target column: “next to” the question tab if present
+    const baseCol = questionEditor?.viewColumn ?? vscode.ViewColumn.Active;
+    const targetCol = vscode.ViewColumn.Beside;
+    // open an untitled doc named after student; inject content; set language
+    const guessLang = guessLanguage(code) ?? 'plaintext';
+    const uri = vscode.Uri.parse(`untitled:Answer_from_${student}.txt`);
+    const doc = await vscode.workspace.openTextDocument(uri); // start empty
+    const ed = await vscode.window.showTextDocument(doc, { preview: false, viewColumn: targetCol });
+    await ed.edit(b => b.insert(new vscode.Position(0, 0), code));
+    await vscode.languages.setTextDocumentLanguage(doc, guessLang);
 });
 // Collab Session: Show Home (webview UI)
 const cmdShowHome = vscode.commands.registerCommand('collab-session.showHome', async () => {
@@ -877,7 +935,15 @@ const cmdCopySessionId = vscode.commands.registerCommand('collab-session.copySes
     await vscode.env.clipboard.writeText(sessionId);
     void vscode.window.showInformationMessage(`Copied: ${sessionId}`);
 });
-const cmdOpenMyAnswer = vscode.commands.registerCommand('collab-session.openMyAnswer', openOrFocusMyAnswer);
+// Collab Session: Open My Answer (student)
+const cmdOpenMyAnswer = vscode.commands.registerCommand('collab-session.openMyAnswer', async () => {
+    if (myRole !== 'student') {
+        void vscode.window.showWarningMessage('This action is for students.');
+        return;
+    }
+    await openMyAnswerTab(); // your existing helper
+    updateAnswerDocContext(); // keep context in sync so buttons show
+});
 // Collab Session: Leave Session (student)
 const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSession', async () => {
     if (!sessionId || !nickname || myRole !== 'student') {
@@ -897,6 +963,9 @@ const cmdLeaveSession = vscode.commands.registerCommand('collab-session.leaveSes
     void vscode.window.showInformationMessage('You left the session.');
     if (sendAnswerStatus)
         sendAnswerStatus.hide();
+    await setUiContext('collab.isStudentInSession', false);
+    await setUiContext('collab.isAnswerDoc', false);
+    ensureStudentStatusBar(); // hides
     goHome();
 });
 // Collab Session: Close Session (host)
@@ -916,12 +985,10 @@ const cmdCloseSession = vscode.commands.registerCommand('collab-session.closeSes
 });
 // Collab Session: Send My Answer (student -> host)
 const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer', async () => {
-    // Guard: must be a student inside an active session
     if (!sessionId || !nickname || myRole !== 'student') {
         void vscode.window.showWarningMessage('Join a session as student first.');
         return;
     }
-    // Prefer the dedicated "My answer" editor; fallback to the active editor
     const fallback = vscode.window.activeTextEditor?.document;
     const doc = (myAnswerEditor && !myAnswerEditor.document.isClosed)
         ? myAnswerEditor.document
@@ -930,37 +997,24 @@ const cmdSendAnswer = vscode.commands.registerCommand('collab-session.sendAnswer
         void vscode.window.showWarningMessage('Open your "My answer" tab first.');
         return;
     }
-    // Normalize/clean the content before sending (drop template header / code fences)
     function cleanStudentAnswer(raw) {
         let t = raw.replace(/\r\n/g, '\n');
-        // Remove a top heading like "# My answer (HIBA)"
-        t = t.replace(/^#\s*My\s+answer.*\n+/i, '');
-        // If wrapped in triple backticks, keep only inner code
-        t = t.replace(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/m, '$1');
-        // Trim trailing blank space but keep a single newline at EOF
+        t = t.replace(/^#\s*My\s+answer.*\n+/i, ''); // drop template header
+        t = t.replace(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```$/m, '$1'); // unwrap fences
         return t.trimEnd() + '\n';
     }
     const code = cleanStudentAnswer(doc.getText());
     if (!code.trim()) {
-        void vscode.window.showWarningMessage('Answer is empty. Please write your solution before sending.');
+        void vscode.window.showWarningMessage('Answer is empty.');
         return;
     }
-    // Collect filename and language to improve the host UX
     const pathMod = require('path');
     const filename = doc.uri.scheme === 'file'
         ? pathMod.basename(doc.uri.fsPath)
         : `answer-${nickname}.txt`;
     const languageId = doc.languageId || undefined;
-    // Send to server
     await ensureSocket();
-    send({
-        type: 'answer',
-        sessionId,
-        name: nickname,
-        code,
-        filename,
-        languageId
-    });
+    send({ type: 'answer', sessionId, name: nickname, code, filename, languageId });
     void vscode.window.showInformationMessage('✅ Answer sent to host.');
 });
 // Collab Session: Send Feedback (host → one student)
@@ -1074,61 +1128,382 @@ function getHomeHtml() {
     return `<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<style>
-  body { font-family: system-ui, sans-serif; margin: 16px; }
-  .row { margin: 10px 0; }
-  input[type=text] { width: 260px; padding: 6px; }
-  button { padding: 6px 12px; margin-right: 8px; }
-  .muted { color:#666; font-size:12px }
-  .card { border:1px solid #ddd; border-radius:8px; padding:12px; }
-  .grid { display:grid; gap:12px; grid-template-columns: 1fr 1fr; }
+  <meta charset="UTF-8" />
+  <!-- csp: keep inline css/js allowed for a simple webview; tighten later if needed -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <style>
+/* === Modern navy-style design with vibrant green buttons === */
+/* This version keeps full logical behavior intact (only UI layer changed) */
+
+:root {
+  /* --- global background --- */
+  --bg: var(--vscode-editor-background, #0b1120);
+
+  /* --- card (panel) background: navy tone --- */
+  --card-bg: #0f1b2a; /* deep navy blue */
+  --card-border: rgba(255, 255, 255, 0.06);
+  --card-shadow: 0 10px 30px rgba(2, 6, 23, 0.45);
+
+  /* --- input fields (slightly lighter than cards) --- */
+  --input-bg: #13233a;
+  --input-border: rgba(255, 255, 255, 0.10);
+  --input-placeholder: #98a3b3;
+
+  /* --- text colors --- */
+  --text: var(--vscode-foreground, #e6edf3);
+  --muted: #9aa8b9;
+
+  /* --- green buttons palette --- */
+  --green: #22c55e;           /* normal green */
+  --green-hover: #16a34a;     /* hover green */
+  --green-pressed: #15803d;   /* pressed/active green */
+  --green-ghost: rgba(34, 197, 94, 0.12); /* translucent accent */
+  --on-green: #0b1a0f;        /* readable text on green background */
+
+  /* --- badge colors (small role indicators) --- */
+  --badge-bg: rgba(148, 163, 184, 0.20);
+  --badge-text: #e6edf3;
+}
+
+/* --- overall page background and text --- */
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial;
+}
+
+/* --- card layout: navy background + subtle shadow --- */
+.card {
+  background: var(--card-bg) !important;
+  border: 1px solid var(--card-border) !important;
+  border-radius: 14px !important;
+  box-shadow: var(--card-shadow) !important;
+  padding: 18px 18px 16px !important;
+}
+
+/* --- input fields: lighter navy tone with rounded corners --- */
+.input {
+  background: var(--input-bg) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--input-border) !important;
+  border-radius: 10px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  padding: 9px 10px !important;
+}
+.input::placeholder {
+  color: var(--input-placeholder) !important;
+}
+/* highlight green border when focused */
+.input:focus {
+  outline: none;
+  border-color: var(--green) !important;
+  box-shadow:
+    0 0 0 3px rgba(34, 197, 94, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+/* --- small badges like “Host” or “Join” --- */
+.badge {
+  background: var(--badge-bg) !important;
+  color: var(--badge-text) !important;
+  border: 0 !important;
+  font-size: 12px !important;
+  padding: 4px 8px !important;
+  border-radius: 999px !important;
+}
+
+/* --- buttons: unified green style with hover/active feedback --- */
+.btn {
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  padding: 9px 12px !important;
+  transition: transform 0.02s ease, filter 0.15s ease, background-color 0.15s ease;
+  cursor: pointer;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+
+/* --- primary green button (used for main actions like Create/Join) --- */
+.btn-primary {
+  background: var(--green) !important;
+  color: var(--on-green) !important;
+  border: 0 !important;
+}
+.btn-primary:hover {
+  background: var(--green-hover) !important;
+}
+.btn-primary:active {
+  background: var(--green-pressed) !important;
+}
+
+/* --- secondary green button (lighter, used for Set Question, etc.) --- */
+.btn-secondary {
+  background: #2ee07a !important; /* vibrant light green */
+  color: #0a1410 !important;
+  border: 0 !important;
+}
+.btn-secondary:hover {
+  filter: brightness(0.98);
+}
+.btn-secondary:active {
+  filter: brightness(0.95);
+}
+
+/* --- optional outline (border-only) green button --- */
+.btn-outline {
+  background: transparent !important;
+  border: 1px solid var(--green) !important;
+  color: var(--green) !important;
+}
+.btn-outline:hover {
+  background: var(--green-ghost) !important;
+}
+
+/* --- layout spacing for field groups --- */
+.field {
+  gap: 10px !important;
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
+/* --- descriptive hint text (below inputs) --- */
+.hint {
+  color: var(--muted) !important;
+  font-size: 12px;
+}
+
+/* --- card title headers (Lecturer / Student) --- */
+.card h3 {
+  color: var(--text) !important;
+  letter-spacing: 0.2px;
+  font-weight: 600;
+}
+/* === Layout: display both cards side by side with equal height === */
+.grid {
+  display: flex; /* arrange cards horizontally */
+  justify-content: space-between; /* leave space between */
+  align-items: stretch; /* make both cards equal height */
+  gap: 24px; /* spacing between cards */
+  flex-wrap: nowrap; /* keep on same line */
+  margin-top: 20px;
+}
+
+/* card styling: same height, equal width, and modern look */
+.card {
+  flex: 1 1 48%; /* each takes ~half of container */
+  min-width: 400px;
+  background: #08131f; /* dark navy background */
+  color: #ffffff; /* white text */
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column; /* allows internal alignment */
+  justify-content: space-between; /* pushes elements evenly inside */
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* hover animation for modern look */
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+/* input fields lighter background to contrast with card */
+.input {
+  background-color: #0e2033 !important;
+  color: #fff !important;
+  border: 1px solid #2d3e50 !important;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+/* buttons vibrant green for highlight */
+.btn-primary,
+.btn-secondary {
+  background-color: #1ddc6f !important;
+  color: #000 !important;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.btn-primary:hover,
+.btn-secondary:hover {
+  background-color: #17c563 !important;
+  transform: scale(1.03);
+}
+
+/* make layout stack vertically on small screens */
+@media (max-width: 900px) {
+  .grid {
+    flex-wrap: wrap;
+  }
+  .card {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+/* === Help / Instructions section === */
+.help-card {
+  margin-top: 40px;
+  background: #08131f; /* same as cards */
+  color: #f2f2f2;
+  border-radius: 12px;
+  padding: 24px 32px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  line-height: 1.6;
+}
+
+.help-card h3 {
+  margin-bottom: 16px;
+  font-weight: 700;
+  font-size: 18px;
+  color: #1ddc6f; /* vibrant green title */
+}
+
+.help-card ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.help-card li {
+  margin-bottom: 10px;
+  padding-left: 18px;
+  position: relative;
+}
+
+.help-card li::before {
+  content: "•";
+  color: #1ddc6f;
+  position: absolute;
+  left: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.highlight {
+  color: #1ddc6f;
+  font-weight: 600;
+}
+
+.help-card code {
+  background: #0e2033;
+  padding: 3px 6px;
+  border-radius: 5px;
+  color: #ffffff;
+  font-family: monospace;
+  font-size: 13px;
+}
 </style>
 </head>
 <body>
-  <h2>Collab Session · Home</h2>
+  <!-- page title -->
+  <h1>Collab Session · Home</h1>
 
+  <!-- two cards: Lecturer / Student -->
   <div class="grid">
-    <div class="card">
-      <h3>Lecturer</h3>
-      <div class="row"><button id="btnCreate">Create session</button></div>
-      <div class="row">
-        <input type="text" id="question" placeholder="Type question..." />
-        <button id="btnSetQ">Set question</button>
-      </div>
-      <div class="row muted">Create first, then set question. Students will see it instantly.</div>
-    </div>
 
-    <div class="card">
-      <h3>Student</h3>
-      <div class="row"><input id="sid" type="text" placeholder="Session ID (e.g. ABC123)"/></div>
-      <div class="row"><input id="nick" type="text" placeholder="Your name"/></div>
-      <div class="row"><button id="btnJoin">Join</button></div>
-      <div class="row muted">Open your answer file and use the command: “Collab Session: Send My Answer”.</div>
-    </div>
+    <!-- ===== Lecturer card ===== -->
+    <section class="card">
+      <h3>
+        Lecturer
+        <span class="badge" id="hostBadge">Host</span> <!-- static badge; you can toggle text via postMessage if needed -->
+      </h3>
+
+      <!-- create session button -->
+      <div class="field">
+        <button id="btnCreate" class="btn btn-primary">Create session</button>
+      </div>
+
+      <!-- set question: text field + action button -->
+      <div class="field">
+        <input id="qInput" class="input" type="text" placeholder="Type question..." />
+        <button id="btnSetQ" class="btn btn-secondary">Set question</button>
+      </div>
+
+      <div class="hint">Create first, then set question. Students will see it instantly.</div>
+    </section>
+
+    <!-- ===== Student card ===== -->
+    <section class="card">
+      <h3>
+        Student
+        <span class="badge">Join</span>
+      </h3>
+
+      <!-- session id -->
+      <div class="field">
+        <input id="sid" class="input" type="text" placeholder="Session ID (e.g. ABC123)" />
+      </div>
+
+      <!-- nickname -->
+      <div class="field">
+        <input id="nick" class="input" type="text" placeholder="Your name" />
+      </div>
+
+      <!-- join button -->
+      <div class="field">
+        <button id="btnJoin" class="btn btn-primary">Join</button>
+      </div>
+
+      <div class="hint">Open your answer tab and use the command: “Collab Session: Send My Answer”.</div>
+    </section>
   </div>
 
+  <section class="help-card">
+    <h3>📘 How to use Collab Session</h3>
+    <ul>
+      <li><b>Lecturer:</b> Click <span class="highlight">Create session</span> to start a new session. Then write your question and click <span class="highlight">Set question</span>.</li>
+      <li><b>Student:</b> Enter the <span class="highlight">Session ID</span> and your name, then click <span class="highlight">Join</span> to connect.</li>
+      <li>Each student gets an <span class="highlight">answer tab</span> to write their solution and send it using the command palette:
+        <code>Collab Session: Send My Answer</code>.
+      </li>
+      <li>Lecturer can view, open, and give feedback to students’ answers live.</li>
+    </ul>
+  </section>
+
   <script>
+    /* ===== wire UI → extension (same command names you already handle) ===== */
     const vscode = acquireVsCodeApi();
-    const q = (id) => document.getElementById(id);
 
-    // when lecturer clicks "Create session" → also send any question typed in the input
-    q('btnCreate').onclick = () => {
-      const initialQ = q('question').value || '';
-      vscode.postMessage({ cmd:'create', initialQuestion: initialQ });
-    };
+    // simple click locks to avoid double firing on fast clicks
+    let creating = false, setting = false, joining = false;
 
-    // when lecturer manually clicks "Set question"
-    q('btnSetQ').onclick = () => {
-      vscode.postMessage({ cmd:'setQuestion', text: q('question').value });
-    };
+    // Create session → post { cmd: 'create' }
+    document.getElementById('btnCreate').addEventListener('click', () => {
+      if (creating) return; creating = true;
+      vscode.postMessage({ cmd: 'create' });
+      setTimeout(()=> creating = false, 400); // small debounce window
+    });
 
-    // when student clicks "Join"
-    q('btnJoin').onclick = () => {
-      vscode.postMessage({ cmd:'join', sessionId: q('sid').value, name: q('nick').value });
-    };
+    // Set question → post { cmd: 'setQuestion', text }
+    document.getElementById('btnSetQ').addEventListener('click', () => {
+      if (setting) return; setting = true;
+      const text = (document.getElementById('qInput').value || '').trim();
+      vscode.postMessage({ cmd: 'setQuestion', text });
+      setTimeout(()=> setting = false, 300);
+    });
+
+    // Join session → post { cmd: 'join', sessionId, name }
+    document.getElementById('btnJoin').addEventListener('click', () => {
+      if (joining) return; joining = true;
+      const sessionId = (document.getElementById('sid').value || '').trim();
+      const name      = (document.getElementById('nick').value || '').trim();
+      vscode.postMessage({ cmd: 'join', sessionId, name });
+      setTimeout(()=> joining = false, 400);
+    });
+
+    // (optional) handle messages from extension if you want to update badges/fields later
+    // window.addEventListener('message', e => { const msg = e.data; /* update UI */ });
   </script>
-
 </body>
 </html>`;
 }
@@ -1140,7 +1515,7 @@ function activate(context) {
     answersProvider = new AnswersTreeProvider();
     vscode.window.registerTreeDataProvider('collabSessionAnswers', answersProvider);
     // --- core commands
-    context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion, cmdOpenMyAnswer, cmdSendAnswerFromFile, cmdLoadQuestionFromFile);
+    context.subscriptions.push(cmdShowHome, cmdCreateSession, cmdJoinSession, cmdCopySessionId, cmdLeaveSession, cmdCloseSession, cmdSendAnswer, cmdOpenStudentAnswer, cmdSendFeedback, cmdShowQuestion, cmdOpenMyAnswer, cmdSendAnswerFromFile, cmdLoadQuestionFromFile, cmdOpenMyAnswer);
     // ---------------------------------------------------------------------------
     // ⚙️ Set Host IP (manual override stored in settings)
     // ---------------------------------------------------------------------------
@@ -1196,7 +1571,16 @@ function activate(context) {
     void vscode.commands.executeCommand('collab-session.showHome');
     console.log('Collab Session activated → Home opened automatically.');
 }
-function deactivate() {
+async function deactivate() {
+    try {
+        await setUiContext('collab.isStudentInSession', false);
+        await setUiContext('collab.isAnswerDoc', false);
+    }
+    catch { }
+    try {
+        ensureStudentStatusBar();
+    }
+    catch { }
     try {
         blockQuestionEditsSub?.dispose();
     }
