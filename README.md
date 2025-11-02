@@ -30,6 +30,7 @@ Run the server from the project root:
 <!-- ```bash -->
 windows PowerShell
     node server.js
+
 The server starts by default on ws://localhost:3000
 
 > 💡 You can update the Host IP anytime from VS Code using the command:  
