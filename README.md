@@ -163,6 +163,6 @@ It includes session records, connected members, questions, answers, and feedback
 
 > 💡 These tables were generated using:
 <!-- ```bash -->
-windows PowerShell
+windows PowerShell:
     node db-check.js
 > This command prints all database contents directly from `collab.db` in a readable table format.
