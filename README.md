@@ -45,7 +45,6 @@ The server starts by default on ws://localhost:3000
 
 
 ## 🧠 How It Works
-
 ### 👨‍🏫 Lecturer (Host)
 1. Create a new session → session ID is automatically copied to clipboard.  
 2. Share the session ID with students.  
