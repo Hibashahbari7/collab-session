@@ -27,11 +27,9 @@ A **Visual Studio Code extension** with a **Node.js WebSocket backend** that ena
 Run the server from the project root:
 
 #### • Windows PowerShell / Linux / macOS
-```bash
-node server.js
-
----
-
+<!-- ```bash -->
+windows PowerShell
+    node server.js
 The server starts by default on ws://localhost:3000
 
 > 💡 You can update the Host IP anytime from VS Code using the command:  
@@ -163,7 +161,7 @@ It includes session records, connected members, questions, answers, and feedback
 ![Database 4](images/database4.png)
 
 > 💡 These tables were generated using:
-> ```bash
-> node db-check.js
-> ```
+<!-- ```bash -->
+windows PowerShell
+    node db-check.js
 > This command prints all database contents directly from `collab.db` in a readable table format.
