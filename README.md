@@ -88,6 +88,7 @@ The server starts by default on ws://localhost:3000
 ## 🖼️ Screenshots
 ---
 
+```md
 ### ⚙️ 1. Run the Server
 Open the terminal in your project folder and run:
 ```bash
