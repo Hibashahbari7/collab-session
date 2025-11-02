@@ -28,7 +28,7 @@ Run the server from the project root:
 
 #### • Windows PowerShell / Linux / macOS
 <!-- ```bash -->
-windows PowerShell
+windows PowerShell:
     node server.js
 
 The server starts by default on ws://localhost:3000
