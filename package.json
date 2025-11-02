@@ -78,8 +78,9 @@
         "command": "collab-session.toggleQuestionSyncMode",
         "title": "Collab Session: Toggle Question Sync Mode"
       },
-      { "command": "collab-session.openMyAnswer",
-        "title": "Collab Session: Open My Answer" 
+      {
+        "command": "collab-session.openMyAnswer",
+        "title": "Collab Session: Open My Answer"
       },
       {
         "command": "collab-session.sendAnswerFromFile",
@@ -101,7 +102,6 @@
         "command": "collab-session.exportMyAnswer",
         "title": "Collab Session: Export My Answer…"
       }
-
     ],
     "viewsContainers": {
       "activitybar": [
@@ -130,9 +130,6 @@
       "title": "Collab Session",
       "properties": {
         "collab.hostIP": {
-          "type": "string",
-          "default": "localhost",
-          "description": "Host IPv4 or WSS URL for the Collab Session server (e.g. 192.168.1.187 or wss://your-ngrok-domain).",
           "type": "boolean",
           "default": true,
           "description": "If true: send question updates only when host saves the doc (Ctrl+S). If false: send live while typing with debounce."
@@ -206,7 +203,6 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js",
-
     "server": "node server.js",
     "server:port": "cross-env COLLAB_PORT=3000 node server.js",
     "dev": "nodemon --watch server.js server.js",
@@ -218,13 +214,13 @@
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^2.3.10",
+    "cross-env": "^7.0.3",
     "eslint": "^8.56.0",
     "glob": "^10.4.5",
     "mocha": "^10.2.0",
-    "typescript": "^5.3.3",
     "nodemon": "^3.1.0",
-    "cross-env": "^7.0.3"
-    },
+    "typescript": "^5.3.3"
+  },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
     "ws": "^8.18.3"

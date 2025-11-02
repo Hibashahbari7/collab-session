@@ -1,43 +1,49 @@
-// db-check.js
+// db-check.js — print all database tables cleanly
 const Database = require('better-sqlite3');
 const db = new Database('collab.db');
 
-const all = (q, p = []) => db.prepare(q).all(p);
+// helper to execute and print tables nicely
+const all = (sql, params=[]) => db.prepare(sql).all(params);
 
-console.log('== sessions ==');
-console.table(all('SELECT * FROM sessions ORDER BY created_at DESC LIMIT 10'));
+const printTable = (title, rows) => {
+  console.log(`\n== ${title} ==`);
+  if (!rows || rows.length === 0) {
+    console.log('(empty)\n');
+  } else {
+    console.table(rows);
+  }
+};
 
-console.log('== members (active) ==');
-console.table(all('SELECT session_id, name, joined_at, left_at FROM members WHERE left_at IS NULL ORDER BY joined_at DESC LIMIT 20'));
+// 1️⃣ sessions
+printTable('sessions',
+  all(`SELECT id, created_at, closed_at FROM sessions ORDER BY id DESC`)
+);
 
-console.log('== questions (latest 5) ==');
-console.table(all(`
-  SELECT session_id,
-         substr(text, 1, 50) || '...' AS preview,
-         set_at
-  FROM questions
-  ORDER BY set_at DESC
-  LIMIT 5
-`));
+// 2️⃣ members
+printTable('members',
+  all(`SELECT session_id, name, joined_at, left_at FROM members ORDER BY joined_at DESC`)
+);
 
-console.log('== answers (latest 5) ==');
-console.table(all(`
-  SELECT session_id,
-         student,
-         length(code) AS size,
-         created_at
-  FROM answers
-  ORDER BY created_at DESC
-  LIMIT 5
-`));
+// 3️⃣ questions
+printTable('questions',
+  all(`SELECT id, session_id, substr(text, 1, 100) AS text, set_at FROM questions ORDER BY set_at DESC`)
+);
 
-console.log('== feedback (latest 5) ==');
-console.table(all(`
-  SELECT session_id,
-         to_student,
-         substr(text, 1, 40) || '...' AS preview,
-         created_at
-  FROM feedback
-  ORDER BY created_at DESC
-  LIMIT 5
-`));
+// 4️⃣ answers
+printTable('answers',
+  all(`SELECT id, session_id, name, substr(code, 1, 100) AS code, submitted_at, filename
+       FROM answers ORDER BY submitted_at DESC`)
+);
+
+// 5️⃣ feedback (if table exists)
+try {
+  const feedback = all(`SELECT * FROM feedback`);
+  printTable('feedback', feedback);
+} catch (e) {
+  console.log('\n(feedback table not found — skipped)');
+}
+
+// ✅ Optional: print list of all tables
+const tables = all(`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;`);
+console.log('\n📋 Tables in database:');
+console.table(tables);

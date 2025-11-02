@@ -1,145 +1,194 @@
 # Collab Session – Real-time Code Sharing in Class
-0
-## Overview
-**Collab Session** is a Visual Studio Code extension with a Node.js WebSocket backend.  
-It enables **lecturers** to create live coding sessions and **students** to participate in real time.  
 
-Key capabilities:
-- Host can create sessions and set coding questions.  
-- Students can join sessions, submit answers, and receive feedback.  
-- Host can review answers, track connected users, and close sessions.  
+A **Visual Studio Code extension** with a **Node.js WebSocket backend** that enables **lecturers** to host live coding sessions and **students** to participate in real time.
 
 ---
 
-## Requirements
-- [Node.js](https://nodejs.org/) (version 18 or later)  
+## 🚀 Overview
+
+**Collab Session** allows seamless collaboration between host and students during coding classes.
+
+### Key Features
+- 🧑‍🏫 **Host** can create and manage live sessions.  
+- 👩‍🎓 **Students** can join, edit code, and submit answers.  
+- 🔄 **Real-time synchronization** of questions and submissions.  
+- 💬 **Feedback system** between host and students.  
+- 📡 Works on LAN (IPv4) or via ngrok for remote use.
+
+---
+
+## ⚙️ Requirements
+- [Node.js](https://nodejs.org/) (v18 or later)  
 - [Visual Studio Code](https://code.visualstudio.com/)  
 
 ---
 
-## Setup & Execution
+## 🧩 Installation & Setup
 
-### 1. Start the Server
-Run the WebSocket server from the project root:
+### 1️⃣ Start the WebSocket Server
+Run the server from the project root:
 
-**Linux / macOS**
-<!-- ```bash -->
+#### • Windows PowerShell / Linux / macOS
+```bash
 node server.js
-![StarttheServer screenshot](images/StarttheServer.png)
-Windows PowerShell
-    node server.js
-The server starts on ws://localhost:3000.
 
-2. Launch the Extension
-    1.Open the project in Visual Studio Code.
-    2.Press F5 (Run Extension).
-    3.A new VS Code window opens with the extension activated.
-    4.The extension automatically connects to ws://localhost:3000.
+---
 
-Usage
-Typical Workflow
+The server starts by default on ws://localhost:3000
 
-1.Host (Lecturer)
-    1.Create a session (session ID is auto-copied).
-    2.Share the session ID with students.
-    3.Set a coding question.
+> 💡 You can update the Host IP anytime from VS Code using the command:  
+> `Collab Session: Set Host IP` (e.g. `192.168.x.x`)
 
-2.Students
-    1.Join the session with ID and name.
-    2.Open a file, edit their solution, and send their answer.
 
-3.Host
-    1.View student submissions in real time.
-    2.Provide individual feedback.
-    3.Close the session once complete.
+### 2️⃣ Launch the Extension
+1. Open the project folder in **VS Code**.  
+2. Press **F5** to run the extension.  
+3. A new VS Code window will open *(Extension Development Host)*.  
+4. The **Home** panel loads automatically.
 
-Extension Commands
-All commands are accessible from the Command Palette (Ctrl+Shift+P / Cmd+Shift+P):
-| Command                                 | Role           | Description                                        |
-| --------------------------------------- | -------------- | -------------------------------------------------- |
-| **Collab Session: Show Home**           | Host & Student | Opens the main panel (create/join session).        |
-| **Collab Session: Create Session**      | Host           | Creates a new session and copies the ID.           |
-| **Collab Session: Join Session**        | Student        | Joins a session by ID and name.                    |
-| **Collab Session: Set Question**        | Host           | Shares a coding question with students.            |
-| **Collab Session: Send My Answer**      | Student        | Sends the content of the current file to the host. |
-| **Collab Session: Open Student Answer** | Host           | Opens a student’s submitted code.                  |
-| **Collab Session: Send Feedback**       | Host           | Sends text feedback to a student.                  |
-| **Collab Session: Copy Session ID**     | Host           | Copies the current session ID to clipboard.        |
-| **Collab Session: Leave Session**       | Student        | Disconnects from the current session.              |
-| **Collab Session: Close Session**       | Host           | Ends the session and disconnects all users.        |
+---
 
-Notes
-    Default configuration uses localhost:3000.
-    No code changes are required for standard usage.
-    Multi-device use is possible by replacing localhost with the server’s IPv4.
+## 🧠 How It Works
 
-<!-- ```markdown -->
-## Screenshots
-### 1. Start the Server
-![start the server](images/StarttheServer.png)  
-Start the WebSocket server using Node.js.
+### 👨‍🏫 Lecturer (Host)
+1. Create a new session → session ID is automatically copied to clipboard.  
+2. Share the session ID with students.  
+3. Type a question and send it to all participants.  
+4. View submitted answers and provide feedback.  
+5. Close the session when finished.
 
-### 2. Run the Extension
-![run extension](images/runF5.png)  
-Run the VS Code extension with **F5**.
+---
 
-### 3. Home Panel
-![show home](images/ShowHome.png)  
-Command palette option: *Collab Session: Show Home*.
+### 👩‍🎓 Students
+1. Join using the **Session ID** and your **name**.  
+2. Open your **“My Answer”** tab to write code.  
+3. Click **Send My Answer** (or use the toolbar button).  
+4. View received feedback from the host.
 
-![home panel](images/Home.png)  
-Main home panel of the extension (create or join session).
+
+## 💻 Commands (Command Palette)
+
+| Description | Role | Command |
+|--------------|------|----------|
+| Opens main control panel | All | `Collab Session: Show Home` |
+| Creates a new session | Host | `Collab Session: Create Session` |
+| Joins existing session | Student | `Collab Session: Join Session` |
+| Sends a coding question | Host | `Collab Session: Set Question` |
+| Sends current file to host | Student | `Collab Session: Send My Answer` |
+| Opens a student submission | Host | `Collab Session: Open Student Answer` |
+| Sends feedback to a student | Host | `Collab Session: Send Feedback` |
+| Copies active session ID | Host | `Collab Session: Copy Session ID` |
+| Leaves the current session | Student | `Collab Session: Leave Session` |
+| Ends the active session | Host | `Collab Session: Close Session` |
+
+> 🖥️ **Default configuration:** uses `ws://localhost:3000`  
+> 🌐 For multi-device use, replace `localhost` with your machine’s **IPv4**.
+
+
+## 🖼️ Screenshots
+---
+
+### ⚙️ 1. Run the Server
+Open the terminal in your project folder and run:
+```bash
+node server.js
+
+---
+
+### 2. Run the Extension  
+Open the project in **VS Code** and press **F5** to start the extension.  
+
+![Run the Extension](images/run-extension.png)
+
+---
+
+### 3. Home Panel  
+Displays the **Lecturer** and **Student** sections with session management tools.  
+
+![Home Panel](images/home-panel.png)
+
+---
 
 ### 4. Create Session (Host)
-![create session](images/CreateSession1.png)  
-Host creating a new session.
+Click **Create Session** to generate a unique session ID for the host.  
+![Create Session 1](images/create-session1.png)  
+![Create Session 2](images/create-session2.png)
 
-![create session detail](images/createSession.png)  
-Session created successfully and session ID is displayed and copied to clipboard automatically..
+---
 
-![copy session id](images/copySessionId.png)  
-Copy the session ID manually to clipboard.
+### 5. Join Session (Student)
+Students enter the **Session ID** and their **name** to connect instantly.  
+![Join Session](images/join-session1.png)  
+![Join Session 2](images/join-session2.png)
 
-### 5. Join Session (Students)
-![join session](images/JoinSession1.png)  
-Student joining a session by entering ID and name.
+---
 
-![student joined](images/StudentJoine.png)  
-Confirmation when a student joins the session.
+### 6. Send Answer (Student)
+Students submit their code using the command **"Collab Session: Send My Answer"**.  
+![Send & Receive Answers](images/send-answer1.png)
+![Send & Receive Answers](images/send-answer2.png)
 
-### 6. Student Answer Flow
-![send my answer](images/SendMyAnswer1.png)  
-Student sending their code answer to the host.
+---
 
-![receive answer](images/ReceiveAnswer1.png)  
-Host receives an answer from a student.
+### 📥 7. Receive Answers (Host)
+Host receives students’ answers instantly and can open them directly.
+![Send & Receive Answers](images/receive-answer1.png)
+![Send & Receive Answers](images/receive-answer2.png)
 
-![receive answer 2](images/ReceiveAnswer2.png)  
-Host viewing another student’s answer.
+---
 
-### 7. Feedback Flow
-![send feedback](images/SendFeedback1.png)  
-Host writing feedback for a student.
+### 8. Feedback Flow  
+Host reviews submissions and sends feedback directly to students.  
 
-![send feedback 2](images/SendFeedback2.png)  
-Feedback window for sending comments to students.
+![Feedback Flow](images/feedback-flow1.png)
+![Feedback Flow](images/feedback-flow2.png)
+![Feedback Flow](images/feedback-flow3.png)
 
-![send feedback 3](images/SendFeedback3.png)
-Feedback sent to the student.
+---
 
-![send feedback 4](images/SendFeedback4.png)
-Feedback tab opened on the student’s side.
+### 🚪 9. Leave Session (Student)
+Students can leave the session anytime using the command:  
+`Collab Session: Leave Session`
 
-### 8. Online Users
-![online users](images/OnlineUsers.png)  
-List of currently connected users.
+When a student leaves, the host receives a notification in the bottom corner.
 
-### 9. Session Management
-![leave session](images/LeaveSession.png)  
-Student leaving the session.
+![Leave Session](images/student-leave1.png)
+![Leave Session Notification](images/student-leave2.png)
+![Student Leaves Host View](images/student-leaves.png)
 
-![user left](images/UserLeft.png)  
-Notification when a user leaves the session.
+---
 
-![close session 2](images/CloseSession2.png)  
-Notification that the session has been closed.
+### 🛑 10. Close Session (Host)
+The lecturer (host) can close the session when finished.  
+All connected students will automatically return to the Home panel and see a warning message.
+
+![Close Session](images/session-closed-by-host.png)
+
+---
+
+---
+
+## 🗄️ 11. Database Overview
+
+This section shows real data saved in **collab.db** after multiple test sessions.  
+It includes session records, connected members, questions, answers, and feedback exchanges between host and students.
+
+### 📊 1. Sessions & Members  
+![Database 1](images/database1.png)
+
+### 📝 2. Questions Table  
+![Database 2](images/database2.png)
+
+### 💬 3. Answers Table  
+![Database 3](images/database3.png)
+
+### 🧠 4. Feedback & Tables Overview  
+![Database 4](images/database4.png)
+
+---
+
+> 💡 These tables were generated using:
+> ```bash
+> node db-check.js
+> ```
+> This command prints all database contents directly from `collab.db` in a readable table format.
